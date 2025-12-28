@@ -1,10 +1,7 @@
 {
-  "metrics": {
-    "accuracy": 0.9111111111111111,
-    "consistency": 0.753350043296814,
-    "faithfulness": 0.563247480455128,
-    "complexity": 0.5861243577032946,
-    "semantic_relevance": 0.6737788832187653
-  },
-  "overall_score": 0.6975223751570226
+  "accuracy": 0.9111111111111111,
+  "consistency": 0.7322275876998902,
+  "relevance_bert": 0.8321880102157593,
+  "faithfulness_bert": 0.8491959571838379,
+  "complexity": 0.598928829981187
 }

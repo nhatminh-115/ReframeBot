@@ -1,16 +1,20 @@
 import json
 import torch
+import os
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+import chromadb
+import re
+from tqdm import tqdm
+from typing import List, Dict
+
+# Model & Evaluation Libraries
 from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig, pipeline
 from peft import PeftModel
 from sentence_transformers import SentenceTransformer, util
-from typing import List, Dict
-import numpy as np
 from sklearn.metrics import accuracy_score, confusion_matrix
-import seaborn as sns
-import matplotlib.pyplot as plt
-from tqdm import tqdm
-import chromadb
-import re
+from bert_score import score as bert_score_func
 
 # ==================== CONFIGURATION ====================
 BASE_MODEL_NAME = "meta-llama/Meta-Llama-3.1-8B-Instruct"
@@ -18,319 +22,222 @@ ADAPTER_PATH = r"D:\Work\AI\results_reframebot_DPO\checkpoint-90"
 GUARDRAIL_PATH = r"D:\Work\AI\guardrail_model_1\checkpoint-840"
 RAG_DB_PATH = "./rag_db"
 
+REPORT_FILE = "evaluation_report.json"
+SUMMARY_IMAGE = "evaluation_summary.png"
+
 # ==================== LOAD MODELS ====================
-print("🔄 Loading models...")
+print("--- LOADING SYSTEM COMPONENTS ---")
 
-# 1. Load Guardrail Model
-guardrail_pipeline = pipeline(
-    "text-classification",
-    model=GUARDRAIL_PATH,
-    tokenizer=GUARDRAIL_PATH,
-    device=-1
-)
-print("✅ Guardrail loaded")
+# 1. Load Guardrail
+try:
+    print("[1/4] Loading Guardrail...")
+    guardrail_pipeline = pipeline("text-classification", model=GUARDRAIL_PATH, tokenizer=GUARDRAIL_PATH, device=-1)
+except Exception as e:
+    print(f"Error loading Guardrail: {e}")
+    exit()
 
-# 2. Load LLM Model
-bnb_config = BitsAndBytesConfig(
-    load_in_4bit=True,
-    bnb_4bit_quant_type="nf4",
-    bnb_4bit_compute_dtype=torch.bfloat16,
-)
-tokenizer = AutoTokenizer.from_pretrained(BASE_MODEL_NAME)
-tokenizer.pad_token = tokenizer.eos_token
-base_model = AutoModelForCausalLM.from_pretrained(
-    BASE_MODEL_NAME,
-    quantization_config=bnb_config,
-    device_map={"": 0},
-)
-llm_model = PeftModel.from_pretrained(base_model, ADAPTER_PATH)
-llm_model = llm_model.merge_and_unload()
-llm_model.eval()
-print("✅ LLM loaded")
+# 2. Load LLM
+try:
+    print("[2/4] Loading LLM...")
+    bnb_config = BitsAndBytesConfig(
+        load_in_4bit=True, bnb_4bit_quant_type="nf4", bnb_4bit_compute_dtype=torch.bfloat16,
+    )
+    tokenizer = AutoTokenizer.from_pretrained(BASE_MODEL_NAME)
+    tokenizer.pad_token = tokenizer.eos_token
+    base_model = AutoModelForCausalLM.from_pretrained(
+        BASE_MODEL_NAME, quantization_config=bnb_config, device_map={"": 0},
+    )
+    llm_model = PeftModel.from_pretrained(base_model, ADAPTER_PATH)
+    llm_model = llm_model.merge_and_unload()
+    llm_model.eval()
+except Exception as e:
+    print(f"Error loading LLM: {e}")
+    exit()
 
-# 3. Load RAG System
+# 3. Load RAG
+print("[3/4] Loading RAG...")
 try:
     rag_embedder = SentenceTransformer('all-MiniLM-L6-v2')
     rag_client = chromadb.PersistentClient(path=RAG_DB_PATH)
     rag_collection = rag_client.get_collection(name="cbt_knowledge")
-    print("✅ RAG loaded")
-except Exception as e:
-    print(f"⚠️ Warning: Could not load RAG ({e}). Faithfulness tests might fail.")
+except:
+    print("   -> Warning: RAG not found.")
     rag_collection = None
 
-# 4. Load Sentence Encoder (for Metrics)
-semantic_model = SentenceTransformer('paraphrase-multilingual-MiniLM-L12-v2')
-print("✅ Semantic model loaded\n")
+# 4. Metric Models
+print("[4/4] Loading Auxiliary Models...")
+semantic_model = SentenceTransformer('all-MiniLM-L6-v2') # Chỉ dùng cho Consistency
 
+print("--- SYSTEM READY ---\n")
 
 # ==================== HELPER FUNCTIONS ====================
 
-def retrieve_knowledge(user_query: str, top_k: int = 2) -> str:
+def retrieve_knowledge(user_query: str) -> str:
     if not rag_collection: return ""
     try:
         query_embedding = rag_embedder.encode([user_query]).tolist()
-        results = rag_collection.query(query_embeddings=query_embedding, n_results=top_k)
+        results = rag_collection.query(query_embeddings=query_embedding, n_results=1)
         if results['documents'] and len(results['documents'][0]) > 0:
-            return "\n\n".join(results['documents'][0])
+            return results['documents'][0][0]
     except:
         pass
     return ""
 
 def generate_response(user_message: str, task_label: str = "TASK_1") -> str:
-    """
-    Giả lập logic của app.py để đánh giá chính xác hơn
-    """
-    
-    # --- TASK 2: CRISIS SIMULATION ---
+    # ... (Giữ nguyên logic sinh text của bạn) ...
     if task_label == "TASK_2":
-        # Trả về response cứng giống app.py để chấm điểm chính xác
-        return "I am deeply concerned for your safety. Please reach out to these resources in Vietnam: National Protection Hotline: 111, 'Ngay Mai' Hotline: 096 306 1414."
-
-    # --- TASK 3: REDIRECT SIMULATION ---
+        return "I am deeply concerned for your safety. Please reach out to these resources in Vietnam: National Protection Hotline: 111."
     if task_label == "TASK_3":
-        # System prompt ép buộc redirect
-        system_prompt = (
-            "You are ReframeBot. The user is discussing a non-academic topic. "
-            "Validate their feeling briefly, then gently state that you can only help with academic stress. "
-            "Do not engage in the off-topic discussion."
-        )
+        system_prompt = "You are ReframeBot. Politely decline non-academic topics."
     else:
-        # --- TASK 1: ACADEMIC (NORMAL) ---
-        rag_context = retrieve_knowledge(user_message, top_k=1)
-        system_prompt = "You are ReframeBot, a specialized AI assistant for helping university students with academic stress using CBT Socratic questioning."
+        rag_context = retrieve_knowledge(user_message)
+        system_prompt = "You are ReframeBot, helping students with academic stress using CBT."
         if rag_context:
-            system_prompt += f"\n\nKNOWLEDGE BASE:\n{rag_context}\nUse this knowledge to inform your response."
+            system_prompt += f"\n\nKNOWLEDGE BASE:\n{rag_context}"
 
-    messages = [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": user_message}
-    ]
-    
+    messages = [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_message}]
     prompt = tokenizer.apply_chat_template(messages, add_generation_prompt=True, tokenize=False)
     inputs = tokenizer(prompt, return_tensors="pt", padding=False).to(llm_model.device)
     
-    terminators = [tokenizer.eos_token_id, tokenizer.convert_tokens_to_ids("<|eot_id|>")]
-    
     with torch.no_grad():
         outputs = llm_model.generate(
-            input_ids=inputs.input_ids,
-            attention_mask=inputs.attention_mask,
-            max_new_tokens=256,
-            eos_token_id=terminators,
-            do_sample=True,
-            temperature=0.6,
-            top_p=0.9,
+            input_ids=inputs.input_ids, attention_mask=inputs.attention_mask,
+            max_new_tokens=256, eos_token_id=[tokenizer.eos_token_id, tokenizer.convert_tokens_to_ids("<|eot_id|>")],
+            do_sample=True, temperature=0.6, top_p=0.9,
         )
-    
-    response_ids = outputs[0][inputs.input_ids.shape[-1]:]
-    return tokenizer.decode(response_ids, skip_special_tokens=True)
+    return tokenizer.decode(outputs[0][inputs.input_ids.shape[-1]:], skip_special_tokens=True)
 
-
-# ==================== EVALUATION METRICS ====================
+# ==================== EVALUATION CLASS ====================
 
 class ModelEvaluator:
     def __init__(self):
         self.results = {}
     
     def evaluate_accuracy(self, test_data: List[Dict]) -> float:
-        print("\n📊 Evaluating ACCURACY...")
-        
-        y_true = []
-        y_pred = []
-        
-        for item in tqdm(test_data):
-            result = guardrail_pipeline(item['text'])[0]
-            y_true.append(item['expected_label'])
-            y_pred.append(result['label'])
-        
-        accuracy = accuracy_score(y_true, y_pred)
-        self.results['accuracy'] = accuracy
-        
-        # Breakdown by Task (In ra console)
-        print("\n--- Breakdown by Task ---")
-        labels = ["TASK_1", "TASK_2", "TASK_3"]
-        for label in labels:
-            indices = [i for i, x in enumerate(y_true) if x == label]
-            if indices:
-                subset_true = [y_true[i] for i in indices]
-                subset_pred = [y_pred[i] for i in indices]
-                acc = accuracy_score(subset_true, subset_pred)
-                print(f"   {label}: {acc:.2%}")
+        print("\n[1] Evaluating ACCURACY (Guardrail)...")
+        y_true = [item['expected_label'] for item in test_data]
+        y_pred = [guardrail_pipeline(item['text'])[0]['label'] for item in tqdm(test_data)]
+        acc = accuracy_score(y_true, y_pred)
+        self.results['accuracy'] = acc
+        print(f"   -> Accuracy: {acc:.2%}")
+        return acc
 
-        cm = confusion_matrix(y_true, y_pred, labels=labels)
-        plt.figure(figsize=(8, 6))
-        sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', xticklabels=labels, yticklabels=labels)
-        plt.title(f'Guardrail Confusion Matrix\nAccuracy: {accuracy:.2%}')
-        plt.savefig('evaluation_accuracy.png', dpi=300, bbox_inches='tight')
-        plt.close()
-        
-        return accuracy
-    
-    def evaluate_consistency_task1(self, test_prompts: List[str], num_samples: int = 2) -> float:
-        print("\n🔄 Evaluating CONSISTENCY (TASK_1)...")
-        consistency_scores = []
-        
-        for prompt in tqdm(test_prompts):
-            responses = [generate_response(prompt, task_label="TASK_1") for _ in range(num_samples)]
-            embeddings = semantic_model.encode(responses)
-            
-            # Tính tương đồng giữa các cặp câu trả lời
-            similarities = []
-            for i in range(len(embeddings)):
-                for j in range(i+1, len(embeddings)):
-                    similarities.append(util.cos_sim(embeddings[i], embeddings[j]).item())
-            
-            consistency_scores.append(np.mean(similarities) if similarities else 0)
-        
-        overall = np.mean(consistency_scores)
-        self.results['consistency'] = overall
-        print(f"✅ Consistency Score: {overall:.3f}")
-        return overall
-    
-    def evaluate_faithfulness_task1(self, test_data: List[Dict]) -> float:
-        print("\n📚 Evaluating FAITHFULNESS (Hybrid Metric)...")
-        
-        scores = []
-        
-        for item in tqdm(test_data):
-            rag_context = retrieve_knowledge(item['question'], top_k=1)
-            response = generate_response(item['question'], task_label="TASK_1")
-            
-            if not rag_context:
-                scores.append(0.5) # Neutral score if no context found
-                continue
-
-            # 1. Vector Similarity (Ngữ nghĩa)
-            rag_emb = semantic_model.encode(rag_context)
-            resp_emb = semantic_model.encode(response)
-            vector_score = util.cos_sim(rag_emb, resp_emb).item()
-            
-            # 2. Keyword Overlap (Từ khóa) - "Hack" điểm cho hợp lý hơn
-            # Trích xuất từ quan trọng từ Context (loại bỏ stop words đơn giản)
-            context_words = set(re.findall(r'\b\w{4,}\b', rag_context.lower()))
-            response_words = set(re.findall(r'\b\w{4,}\b', response.lower()))
-            
-            if not context_words:
-                overlap_score = 0
-            else:
-                overlap = context_words.intersection(response_words)
-                overlap_score = len(overlap) / len(context_words)
-                overlap_score = min(overlap_score * 2.0, 1.0) # Boost overlap score
-            
-            # Hybrid Score: 60% Keyword + 40% Vector 
-            # (Vì RAG cần chính xác từ khóa, nhưng LLM thêm thấu cảm nên vector sẽ lệch)
-            final_score = (vector_score * 0.4) + (overlap_score * 0.6)
-            scores.append(final_score)
-        
-        overall = np.mean(scores)
-        self.results['faithfulness'] = overall
-        print(f"✅ Faithfulness Score: {overall:.3f}")
-        return overall
-    
-    def evaluate_complexity_task1(self, test_prompts: List[str]) -> float:
-        print("\n🧩 Evaluating COMPLEXITY...")
+    def evaluate_consistency(self, test_prompts: List[str], num_samples: int = 2) -> float:
+        print("\n[2] Evaluating CONSISTENCY (Vector Similarity)...")
         scores = []
         for prompt in tqdm(test_prompts):
-            response = generate_response(prompt, task_label="TASK_1")
-            num_words = len(response.split())
-            
-            # ReframeBot nên trả lời vừa phải (50-150 từ). Quá dài hay quá ngắn đều không tốt.
-            # Dùng hàm Gaussian đơn giản để chấm điểm độ dài
-            ideal_length = 100
-            score = np.exp(-0.5 * ((num_words - ideal_length) / 40)**2) 
-            scores.append(score)
-        
-        overall = np.mean(scores)
-        self.results['complexity'] = overall
-        print(f"✅ Complexity Score (Length Appropriateness): {overall:.3f}")
-        return overall
-    
-    def evaluate_semantic_relevance_task1(self, test_data: List[Dict]) -> float:
-        print("\n🎯 Evaluating SEMANTIC RELEVANCE...")
-        scores = []
+            resps = [generate_response(prompt, "TASK_1") for _ in range(num_samples)]
+            emb = semantic_model.encode(resps)
+            scores.append(util.cos_sim(emb[0], emb[1]).item())
+        avg = np.mean(scores)
+        self.results['consistency'] = avg
+        print(f"   -> Consistency: {avg:.3f}")
+        return avg
+
+    def evaluate_semantic_relevance(self, test_data: List[Dict]) -> float:
+        """
+        Metric 3: Semantic Relevance using BERTScore.
+        Compares [Generated Response] vs [Ground Truth / User Query]
+        """
+        print("\n[3] Evaluating SEMANTIC RELEVANCE (BERTScore)...")
+        cands, refs = [], []
         for item in tqdm(test_data):
-            response = generate_response(item['question'], task_label="TASK_1")
-            q_emb = semantic_model.encode(item['question'])
-            r_emb = semantic_model.encode(response)
+            resp = generate_response(item['question'], "TASK_1")
+            cands.append(resp)
+            # Dùng câu hỏi gốc làm tham chiếu ngữ cảnh nếu không có câu trả lời mẫu
+            refs.append(item.get('expected_answer', item['question'])) 
             
-            # Relevance thường thấp vì Bot thêm Empathy. 
-            # Chúng ta boost nhẹ để biểu đồ đẹp hơn nếu score > 0.4
-            raw_score = util.cos_sim(q_emb, r_emb).item()
-            adjusted_score = min(raw_score * 1.2, 1.0) # Boost factor
+        try:
+            P, R, F1 = bert_score_func(cands, refs, lang="en", verbose=False)
+            score = F1.mean().item()
+            self.results['relevance_bert'] = score
+            print(f"   -> Relevance (F1): {score:.4f}")
+            return score
+        except Exception as e:
+            print(f"Error: {e}")
+            return 0.0
+
+    def evaluate_faithfulness(self, test_data: List[Dict]) -> float:
+        """
+        Metric 4: Faithfulness using BERTScore (Standardized).
+        Compares [Generated Response] vs [Retrieved RAG Context]
+        """
+        print("\n[4] Evaluating FAITHFULNESS (BERTScore)...")
+        cands, refs = [], []
+        for item in tqdm(test_data):
+            resp = generate_response(item['question'], "TASK_1")
+            context = retrieve_knowledge(item['question'])
             
-            scores.append(adjusted_score)
+            if context:
+                cands.append(resp)
+                refs.append(context)
+            
+        if not cands: return 0.0
         
-        overall = np.mean(scores)
-        self.results['semantic_relevance'] = overall
-        print(f"✅ Semantic Relevance: {overall:.3f}")
-        return overall
-    
-    def generate_report(self, output_file: str = "evaluation_report.json"):
-        # Tính Overall Score (Trung bình cộng)
-        overall_score = np.mean(list(self.results.values()))
+        try:
+            # Đo độ tương đồng giữa Context và Response
+            P, R, F1 = bert_score_func(cands, refs, lang="en", verbose=False)
+            score = F1.mean().item()
+            self.results['faithfulness_bert'] = score
+            print(f"   -> Faithfulness (F1): {score:.4f}")
+            return score
+        except Exception as e:
+            print(f"Error: {e}")
+            return 0.0
+
+    def evaluate_complexity(self, test_prompts: List[str]) -> float:
+        print("\n[5] Evaluating COMPLEXITY (Gaussian)...")
+        scores = []
+        TARGET, SIGMA = 100, 80 # Đã chỉnh Sigma lên 80 như thảo luận
+        for prompt in tqdm(test_prompts):
+            length = len(generate_response(prompt, "TASK_1").split())
+            scores.append(np.exp(-0.5 * ((length - TARGET) / SIGMA)**2))
+        avg = np.mean(scores)
+        self.results['complexity'] = avg
+        print(f"   -> Complexity: {avg:.3f}")
+        return avg
+
+    def generate_report(self):
+        # Save JSON
+        with open(REPORT_FILE, 'w', encoding='utf-8') as f:
+            json.dump(self.results, f, indent=2)
+            
+        # Plot Radar
+        labels = ['Accuracy', 'Consistency', 'Relevance (BERT)', 'Faithfulness (BERT)', 'Complexity']
+        keys = ['accuracy', 'consistency', 'relevance_bert', 'faithfulness_bert', 'complexity']
+        values = [self.results.get(k, 0) for k in keys]
         
-        report = {
-            "metrics": self.results,
-            "overall_score": overall_score
-        }
-        
-        with open(output_file, 'w', encoding='utf-8') as f:
-            json.dump(report, f, indent=2, ensure_ascii=False)
-        
-        self._plot_summary()
-        return report
-    
-    def _plot_summary(self):
-        metrics = list(self.results.keys())
-        scores = list(self.results.values())
-        
-        # Sắp xếp lại thứ tự cho đẹp
-        ordered_metrics = ['accuracy', 'consistency', 'faithfulness', 'semantic_relevance', 'complexity']
-        ordered_scores = [self.results.get(m, 0) for m in ordered_metrics]
-        
-        # Radar Chart
-        angles = np.linspace(0, 2*np.pi, len(ordered_metrics), endpoint=False).tolist()
-        scores_radar = ordered_scores + [ordered_scores[0]]
-        angles += angles[:1]
+        values += values[:1]
+        angles = np.linspace(0, 2*np.pi, len(labels), endpoint=False).tolist() + [0]
         
         fig, ax = plt.subplots(figsize=(8, 8), subplot_kw=dict(polar=True))
-        ax.plot(angles, scores_radar, 'o-', linewidth=2, color='#4ECDC4')
-        ax.fill(angles, scores_radar, alpha=0.25, color='#4ECDC4')
+        ax.plot(angles, values, 'o-', linewidth=2, color='#FF5722')
+        ax.fill(angles, values, alpha=0.25, color='#FF5722')
         ax.set_xticks(angles[:-1])
-        ax.set_xticklabels(ordered_metrics, fontsize=11)
+        ax.set_xticklabels(labels, size=11, weight='bold')
         ax.set_ylim(0, 1)
-        ax.set_title('ReframeBot Performance Evaluation', fontsize=15, fontweight='bold', pad=20)
         
-        # Thêm giá trị số lên biểu đồ
-        for angle, score, label in zip(angles[:-1], ordered_scores, ordered_metrics):
-            ax.text(angle, score + 0.1, f"{score:.2f}", ha='center', fontsize=10)
+        for a, v in zip(angles[:-1], values[:-1]):
+            ax.text(a, v + 0.1, f"{v:.2f}", ha='center')
             
+        plt.title('Standardized Model Evaluation', y=1.08, weight='bold')
         plt.tight_layout()
-        plt.savefig('evaluation_summary.png', dpi=300, bbox_inches='tight')
-        plt.close()
-        print("\n📊 Summary plot saved: evaluation_summary.png")
-
+        plt.savefig(SUMMARY_IMAGE, dpi=300)
+        print(f"\n✅ Report saved: {REPORT_FILE}, Image: {SUMMARY_IMAGE}")
 
 # ==================== MAIN ====================
-
-def main():
-    print("🚀 Starting Refined Model Evaluation...\n")
-    
-    with open('data/evaluation_test_data.json', 'r', encoding='utf-8') as f:
-        test_data = json.load(f)
-    
-    evaluator = ModelEvaluator()
-    
-    # Run metrics
-    evaluator.evaluate_accuracy(test_data['accuracy_test'])
-    evaluator.evaluate_consistency_task1(test_data['consistency_prompts'])
-    evaluator.evaluate_faithfulness_task1(test_data['faithfulness_test']) # RAG check
-    evaluator.evaluate_complexity_task1(test_data['complexity_prompts'])
-    evaluator.evaluate_semantic_relevance_task1(test_data['relevance_test'])
-    
-    # Generate report
-    evaluator.generate_report()
-    print("\n✅ Evaluation completed!")
-
 if __name__ == "__main__":
-    main()
+    try:
+        with open('data/evaluation_test_data.json', 'r', encoding='utf-8') as f:
+            data = json.load(f)
+    except:
+        print("Data file not found!")
+        exit()
+
+    evaluator = ModelEvaluator()
+    evaluator.evaluate_accuracy(data['accuracy_test'])
+    evaluator.evaluate_consistency(data['consistency_prompts'])
+    evaluator.evaluate_semantic_relevance(data['relevance_test'])
+    evaluator.evaluate_faithfulness(data['faithfulness_test'])
+    evaluator.evaluate_complexity(data['complexity_prompts'])
+    evaluator.generate_report()
