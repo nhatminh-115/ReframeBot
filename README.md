@@ -182,7 +182,7 @@ This project is licensed under the Apache License 2.0 - see the LICENSE file for
 ## Author
 
 **Nghiem Nhat Minh**
-- GitHub: [@minhnghiem32131024429](https://github.com/nhatminh-115)
+- GitHub: [@nhatminh115](https://github.com/nhatminh-115)
 - Hugging Face: [@Nhatminh1234](https://huggingface.co/Nhatminh1234)
 
 ## Acknowledgments
