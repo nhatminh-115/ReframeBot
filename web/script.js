@@ -1,5 +1,6 @@
 // API URL
 const API_URL = "http://localhost:8000/chat";
+const STREAM_URL = "http://localhost:8000/chat/stream";
 
 // Chat history
 let chatHistory = [];
@@ -139,52 +140,80 @@ async function sendMessage() {
     scrollToBottom();
     
     try {
-        // Call API
-        const response = await fetch(API_URL, {
+        const response = await fetch(STREAM_URL, {
             method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-                history: chatHistory
-            })
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ history: chatHistory }),
         });
-        
+
         if (!response.ok) {
-            throw new Error('API request failed');
+            throw new Error(`Server error ${response.status}`);
         }
-        
-        const data = await response.json();
-        const botResponse = data.response || "Sorry, I couldn't process your request.";
-        
-        // Hide typing indicator
+
+        // Hide typing indicator and create the bot bubble before first token
         typingIndicator.style.display = 'none';
-        
-        // Add bot response to UI
-        addMessageToUI(botResponse, 'bot');
-        
-        // Add to history
-        chatHistory.push({
-            role: "assistant",
-            content: botResponse
-        });
-        
+        const botBubble = addStreamingMessageToUI();
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let fullResponse = '';
+
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            const lines = decoder.decode(value, { stream: true }).split('\n');
+            for (const line of lines) {
+                if (!line.startsWith('data: ')) continue;
+                const payload = line.slice(6).trim();
+                if (payload === '[DONE]') break;
+                try {
+                    const { token } = JSON.parse(payload);
+                    fullResponse += token;
+                    botBubble.innerHTML = formatMessage(fullResponse);
+                    scrollToBottom();
+                } catch (_) { /* partial chunk — skip */ }
+            }
+        }
+
+        chatHistory.push({ role: 'assistant', content: fullResponse });
+
     } catch (error) {
         console.error('Error:', error);
         typingIndicator.style.display = 'none';
-        
-        const errorMessage = "❌ ERROR: Unable to connect to the server. Please try again later or contact admin for support.";
+
+        const errorMessage = "Connection error. Please check the server and try again.";
         addMessageToUI(errorMessage, 'bot');
-        
-        chatHistory.push({
-            role: "assistant",
-            content: errorMessage
-        });
+        chatHistory.push({ role: 'assistant', content: errorMessage });
     }
     
     // Re-enable input
     sendBtn.disabled = false;
     messageInput.focus();
+}
+
+// Add a bot message bubble and return a reference to it for live token updates
+function addStreamingMessageToUI() {
+    const messageDiv = document.createElement('div');
+    messageDiv.className = 'message bot-message';
+
+    const avatarDiv = document.createElement('div');
+    avatarDiv.className = 'message-avatar bot-avatar';
+    avatarDiv.innerHTML = '<i class="fas fa-robot"></i>';
+
+    const contentDiv = document.createElement('div');
+    contentDiv.className = 'message-content';
+
+    const bubbleDiv = document.createElement('div');
+    bubbleDiv.className = 'message-bubble bot-bubble';
+
+    contentDiv.appendChild(bubbleDiv);
+    messageDiv.appendChild(avatarDiv);
+    messageDiv.appendChild(contentDiv);
+    chatMessages.appendChild(messageDiv);
+    scrollToBottom();
+
+    return bubbleDiv;
 }
 
 // Add message to UI

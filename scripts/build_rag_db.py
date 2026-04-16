@@ -1,36 +1,53 @@
-import chromadb
-from sentence_transformers import SentenceTransformer
-import os
+"""Build the ChromaDB RAG database from data/knowledge.txt.
 
-# 1. Cấu hình
-TEXT_FILE = "data\\knowledge.txt" # File chứa kiến thức chuẩn của bạn
-DB_PATH = "./rag_db" # Nơi lưu database
+Usage:
+    uv run python scripts/build_rag_db.py
+    uv run python scripts/build_rag_db.py --text data/knowledge.txt --db rag_db --chunk 500 --stride 400
+"""
+from __future__ import annotations
 
-# 2. Tải model Embedding (Chạy CPU, siêu nhẹ)
-print("Đang tải model embedding...")
-embedder = SentenceTransformer('all-MiniLM-L6-v2')
+import argparse
+from pathlib import Path
 
-# 3. Khởi tạo ChromaDB
-client = chromadb.PersistentClient(path=DB_PATH)
-collection = client.get_or_create_collection(name="cbt_knowledge")
+_REPO_ROOT = Path(__file__).resolve().parent.parent
 
-# 4. Đọc và Cắt nhỏ văn bản (Chunking)
-print("Đang đọc và cắt nhỏ tài liệu...")
-with open(TEXT_FILE, 'r', encoding='utf-8') as f:
-    text = f.read()
 
-# Cắt thành các đoạn khoảng 300 ký tự (đơn giản hóa)
-chunks = [text[i:i+500] for i in range(0, len(text), 400)] 
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Build ChromaDB RAG database from a text file")
+    parser.add_argument("--text", default=str(_REPO_ROOT / "data" / "knowledge.txt"))
+    parser.add_argument("--db", default=str(_REPO_ROOT / "rag_db"))
+    parser.add_argument("--chunk", type=int, default=500, help="Chunk size in characters")
+    parser.add_argument("--stride", type=int, default=400, help="Stride between chunks")
+    parser.add_argument("--model", default="all-MiniLM-L6-v2")
+    args = parser.parse_args()
 
-# 5. Nhúng (Embed) và Lưu vào DB
-print(f"Đang lưu {len(chunks)} đoạn kiến thức vào DB...")
-ids = [str(i) for i in range(len(chunks))]
-embeddings = embedder.encode(chunks).tolist()
+    import chromadb
+    from sentence_transformers import SentenceTransformer
 
-collection.add(
-    documents=chunks,
-    embeddings=embeddings,
-    ids=ids
-)
+    text_path = Path(args.text)
+    if not text_path.exists():
+        raise FileNotFoundError(f"Text file not found: {text_path}")
 
-print("✅ Đã tạo xong RAG Database!")
+    print(f"Loading embedding model: {args.model}")
+    embedder = SentenceTransformer(args.model)
+
+    print(f"Reading: {text_path}")
+    text = text_path.read_text(encoding="utf-8")
+    chunks = [text[i : i + args.chunk] for i in range(0, len(text), args.stride)]
+    print(f"Created {len(chunks)} chunks (size={args.chunk}, stride={args.stride})")
+
+    client = chromadb.PersistentClient(path=args.db)
+    collection = client.get_or_create_collection(name="cbt_knowledge")
+
+    embeddings = embedder.encode(chunks).tolist()
+    collection.add(
+        documents=chunks,
+        embeddings=embeddings,
+        ids=[str(i) for i in range(len(chunks))],
+    )
+
+    print(f"RAG database saved to: {args.db}")
+
+
+if __name__ == "__main__":
+    main()

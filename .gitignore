@@ -16,9 +16,10 @@ build/
 .env
 .env.local
 
-# IDE
+# IDE / tooling
 .vscode/
 .idea/
+.claude/
 *.swp
 *.swo
 *~
@@ -62,3 +63,6 @@ desktop.ini
 *.tmp
 *.temp
 ~$*
+
+# UI assets (audio/video/image — use Git LFS or host externally)
+Utils/

@@ -2,6 +2,8 @@
 
 ReframeBot is a CBT-oriented chatbot for supporting university students with academic stress. It combines a fine-tuned Llama 3.1 model with a guardrail router (TASK_1/TASK_2/TASK_3) and optional RAG grounding from a CBT knowledge base.
 
+> For full training details, hyperparameters, and per-class metrics, see [MODEL_CARD.md](MODEL_CARD.md).
+
 ## Model Repositories
 
 Our trained models are available on Hugging Face:
@@ -33,7 +35,14 @@ cd ReframeBot
 
 2. Install dependencies:
 ```bash
-pip install -r requirements.txt
+# Runtime only (to run the server)
+pip install -e .
+
+# Including evaluation / push scripts
+pip install -e ".[scripts]"
+
+# Including full training pipeline
+pip install -e ".[train]"
 ```
 
 3. Download models from Hugging Face:
@@ -41,16 +50,16 @@ pip install -r requirements.txt
    - **DPO Adapter**: [ReframeBot-DPO-Llama3.1-8B](https://huggingface.co/Nhatminh1234/ReframeBot-DPO-Llama3.1-8B)
    - **Guardrail Model**: [ReframeBot-Guardrail-DistilBERT](https://huggingface.co/Nhatminh1234/ReframeBot-Guardrail-DistilBERT)
 
-4. Create a local config file (recommended):
+4. Create a local config file:
    - Copy `.env.example` to `.env`
-   - Update paths as needed (example):
+   - Set at minimum `ADAPTER_PATH` and `GUARDRAIL_PATH` to your local model directories:
 ```env
-GUARDRAIL_PATH=D:\\Work\\AI\\guardrail_model_retrained\\best
-GUARDRAIL_CONTEXT_TURNS=3
+ADAPTER_PATH=D:\Work\AI\results_reframebot_DPO\checkpoint-90
+GUARDRAIL_PATH=D:\Work\AI\guardrail_model_retrained\best
 ```
    Notes:
-   - `.env` is ignored by git by design.
-   - Model checkpoints are not committed to this repo; point `GUARDRAIL_PATH` to your local folder.
+   - `.env` is git-ignored by design — never commit it.
+   - See `.env.example` for the full list of configurable variables.
 
 5. Run the FastAPI server:
 ```bash
@@ -70,26 +79,37 @@ The UI will call the backend at `http://127.0.0.1:8000/chat`.
 
 ```
 ReframeBot/
-├── app.py                  # FastAPI backend with guardrail integration
-├── train.ipynb             # Training notebook (SFT + DPO + Guardrail)
+├── app.py                      # Entry point: python app.py
+├── pyproject.toml              # Dependencies (runtime / scripts / train groups)
+├── train.ipynb                 # Training notebook (SFT + DPO + Guardrail)
+├── src/
+│   └── reframebot/
+│       ├── config.py           # All settings via pydantic-settings + .env
+│       ├── constants.py        # Hotlines, keywords, regex, prototype sentences
+│       ├── router.py           # Task routing logic (TASK_1/2/3 priority chain)
+│       ├── main.py             # FastAPI app, lifespan, /chat endpoint
+│       └── services/
+│           ├── guardrail.py    # Guardrail classifier + crisis detection
+│           ├── rag.py          # ChromaDB retrieval
+│           └── llm.py          # LLM loading + inference
 ├── web/
-│   ├── index.html          # Main HTML file
-│   ├── style.css           # Glassmorphism styles
-│   └── script.js           # Frontend logic
+│   ├── index.html
+│   ├── style.css
+│   └── script.js
 ├── data/
-│   ├── dataset.jsonl       # SFT training data
-│   ├── dataset_dpo.jsonl   # DPO training data
-│   └── guardrail_dataset.jsonl  # Guardrail training data
+│   ├── dataset.jsonl           # SFT training data
+│   ├── dataset_dpo.jsonl       # DPO training data
+│   └── guardrail_dataset.jsonl
 ├── scripts/
-│   ├── check_data.py       # Dataset validation
-│   ├── check_dpo_dataset.py
-│   ├── push_to_hub.py      # Upload single model
-│   └── push_all_models.py  # Upload all models
+│   ├── build_rag_db.py         # Build ChromaDB from knowledge.txt
+│   ├── train_guardrail.py      # Retrain guardrail classifier
+│   ├── evaluate_model.py       # Evaluation + metrics
+│   ├── prepare_guardrail_data.py
+│   ├── push_to_hub.py          # Upload single model to HF Hub
+│   └── push_all_models.py      # Upload all models
 ├── docs/
-│   └── SETUP.md            # Detailed setup guide
-├── Utils/                  # Background assets
-├── requirements.txt        # Python dependencies
-└── README.md          
+│   └── SETUP.md
+└── Utils/                      # Background audio/image assets
 ```
 
 ## UI
@@ -105,16 +125,40 @@ Edit `web/script.js`:
 const API_URL = "http://your-domain.com/chat";
 ```
 
-### Guardrail settings
-You can override routing behavior without editing code via `.env`:
-- `GUARDRAIL_PATH`: local folder path to a transformers text-classification checkpoint
-- `GUARDRAIL_CONTEXT_TURNS`: number of recent user turns concatenated for guardrail input (default: 3)
-- `GUARDRAIL_CONTEXT_MAX_CHARS`: max characters used for guardrail input (default: 700)
-- `CRISIS_SEMANTIC_SIM_THRESHOLD`, `CRISIS_SEMANTIC_SIM_MARGIN`: semantic crisis detector thresholds
-- `ROUTER_EMBED_MODEL`: embedding model used for routing/RAG (default: `all-MiniLM-L6-v2`)
+### All configuration via `.env`
+Copy `.env.example` to `.env`. Key variables:
+
+| Variable | Default | Description |
+|---|---|---|
+| `ADAPTER_PATH` | — | Path to DPO adapter checkpoint (required) |
+| `GUARDRAIL_PATH` | auto-discover | Path to guardrail model directory |
+| `BASE_MODEL_NAME` | `meta-llama/Meta-Llama-3.1-8B-Instruct` | HF model ID or local path |
+| `RAG_DB_PATH` | `./rag_db` | ChromaDB directory |
+| `GUARDRAIL_CONTEXT_TURNS` | `3` | Recent user turns fed to the classifier |
+| `CRISIS_CONFIDENCE_THRESHOLD` | `0.90` | Guardrail score above which TASK_2 is high-confidence |
+| `CRISIS_SEMANTIC_SIM_THRESHOLD` | `0.62` | Cosine sim threshold for semantic crisis detection |
+| `HOST` / `PORT` | `0.0.0.0` / `8000` | Server bind address |
+| `CORS_ORIGINS` | `*` | Comma-separated list of allowed origins |
 
 ### Customize Colors
 Edit `web/style.css` to change color scheme, glass effects, and more.
+
+## Evaluation Results
+
+All metrics were measured on a held-out test set not seen during training.
+
+| Metric | Value | Description |
+|---|---|---|
+| Guardrail Accuracy | **91.1%** | Task classification on held-out evaluation set |
+| Guardrail F1 (macro) | **0.99** | Precision/recall balance across all 3 task classes |
+| BERTScore Relevance | **0.832** | Semantic similarity between generated and reference responses |
+| BERTScore Faithfulness | **0.849** | Alignment between generated response and retrieved RAG context |
+| Response Consistency | **0.732** | Cosine similarity between repeated responses to the same prompt |
+
+**Notes:**
+- Guardrail F1=0.99 was measured on the 20% validation split (335 samples) during training; 91.1% reflects a separate, harder evaluation set.
+- Faithfulness > Relevance suggests the model grounds well in retrieved context when RAG is active.
+- Full evaluation report: [`evaluation_report.json`](evaluation_report.json) | Radar chart: [`evaluation_summary.png`](evaluation_summary.png)
 
 ## Training
 

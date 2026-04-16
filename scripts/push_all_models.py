@@ -1,59 +1,80 @@
-import os
-from huggingface_hub import HfApi
+"""Upload all three ReframeBot model checkpoints to Hugging Face Hub.
 
-# Lấy token từ environment variable
-HF_TOKEN = os.getenv("HF_TOKEN")
+Paths are read from .env so they work on any machine.
 
+Usage:
+    uv run python scripts/push_all_models.py
+
+Required .env variables:
+    HF_TOKEN          — HF write token
+    SFT_ADAPTER_PATH  — local path to SFT checkpoint directory
+    ADAPTER_PATH      — local path to DPO checkpoint directory
+    GUARDRAIL_PATH    — local path to guardrail model directory
+"""
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+load_dotenv(_REPO_ROOT / ".env")
+
+import os  # noqa: E402
+
+HF_TOKEN = os.environ.get("HF_TOKEN", "")
 if not HF_TOKEN:
-    print("❌ Chưa set HF_TOKEN environment variable!")
-    print("Chạy: $env:HF_TOKEN='your_token_here'")
-    exit(1)
+    print("ERROR: HF_TOKEN is not set in .env")
+    sys.exit(1)
 
-api = HfApi(token=HF_TOKEN)
-
-# Định nghĩa 3 models cần push
-models = [
+MODELS = [
     {
-        "name": "SFT Adapter (Prototype 5)",
-        "local_path": "D:/Work/AI/Prototypes/Prototype_5/checkpoint-423",
+        "name": "SFT Adapter",
+        "path": os.environ.get("SFT_ADAPTER_PATH", ""),
         "repo_id": "Nhatminh1234/ReframeBot-SFT-Llama3.1-8B",
     },
     {
         "name": "DPO Adapter",
-        "local_path": "D:/Work/AI/results_reframebot_DPO/checkpoint-90",
+        "path": os.environ.get("ADAPTER_PATH", ""),
         "repo_id": "Nhatminh1234/ReframeBot-DPO-Llama3.1-8B",
     },
     {
         "name": "Guardrail Classifier",
-        "local_path": "D:/Work/AI/guardrail_model/checkpoint-950",
+        "path": os.environ.get("GUARDRAIL_PATH", ""),
         "repo_id": "Nhatminh1234/ReframeBot-Guardrail-DistilBERT",
-    }
+    },
 ]
 
-print("=" * 60)
-print("🚀 PUSH MODELS LÊN HUGGING FACE")
-print("=" * 60)
+from huggingface_hub import HfApi  # noqa: E402
 
-for idx, model in enumerate(models, 1):
-    print(f"\n[{idx}/3] Đang upload: {model['name']}")
-    print(f"   📁 Local: {model['local_path']}")
-    print(f"   🌐 Repo: {model['repo_id']}")
-    
-    if not os.path.exists(model['local_path']):
-        print(f"   ⚠️  SKIP: Folder không tồn tại!")
-        continue
-    
-    try:
-        api.upload_folder(
-            folder_path=model['local_path'],
-            repo_id=model['repo_id'],
-            repo_type="model",
-            commit_message=f"Upload {model['name']}"
-        )
-        print(f"   ✅ Thành công!")
-    except Exception as e:
-        print(f"   ❌ Lỗi: {e}")
+api = HfApi(token=HF_TOKEN)
 
-print("\n" + "=" * 60)
-print("🎉 HOÀN TẤT!")
-print("=" * 60)
+
+def main() -> None:
+    for model in MODELS:
+        name, path, repo_id = model["name"], model["path"], model["repo_id"]
+        if not path:
+            print(f"SKIP {name}: path not set in .env")
+            continue
+        if not Path(path).exists():
+            print(f"SKIP {name}: path does not exist — {path}")
+            continue
+
+        print(f"Uploading {name} from {path} -> {repo_id} ...")
+        try:
+            api.upload_folder(
+                folder_path=path,
+                repo_id=repo_id,
+                repo_type="model",
+                commit_message=f"Upload {name}",
+            )
+            print(f"  done: https://huggingface.co/{repo_id}")
+        except Exception as exc:
+            print(f"  ERROR: {exc}")
+
+    print("Finished.")
+
+
+if __name__ == "__main__":
+    main()
