@@ -32,9 +32,7 @@ services:
       start_period: 120s
 
   api:
-    build:
-      context: .
-      dockerfile: docker/api.Dockerfile
+    image: nhatminh115/reframebot-api:latest
     env_file:
       - .env
     environment:

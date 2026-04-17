@@ -15,6 +15,12 @@ All models are available on Hugging Face:
 | SFT Adapter | [ReframeBot-SFT-Llama3.1-8B](https://huggingface.co/Nhatminh1234/ReframeBot-SFT-Llama3.1-8B) | Supervised Fine-Tuning LoRA adapter |
 | Guardrail Classifier | [ReframeBot-Guardrail-DistilBERT](https://huggingface.co/Nhatminh1234/ReframeBot-Guardrail-DistilBERT) | 3-class task router (CBT / Crisis / Out-of-scope) |
 
+The API container image is published on Docker Hub:
+
+| Image | Repository |
+|---|---|
+| API container | [nhatminh115/reframebot-api](https://hub.docker.com/r/nhatminh115/reframebot-api) |
+
 ## Features
 - Fine-tuned Llama 3.1 8B (SFT + DPO adapter, merged and served via vLLM)
 - AWQ 4-bit quantization (autoawq) — runs on 8 GB VRAM
@@ -34,38 +40,37 @@ All models are available on Hugging Face:
 
 ### Option A — Docker (recommended)
 
+All models are pre-built and hosted on Hugging Face / Docker Hub — no training or quantization required.
+
 1. Clone and configure:
 ```bash
 git clone https://github.com/minhnghiem32131024429/ReframeBot.git
 cd ReframeBot
 cp .env.example .env
-# Set HF_TOKEN in .env (required for gated Llama 3.1 access)
+# Set HF_TOKEN in .env (required to download the AWQ model from HF)
 ```
 
-2. Download guardrail model:
+2. Download models:
 ```bash
+# AWQ model (~4 GB, served by vLLM)
+python -c "
+from huggingface_hub import snapshot_download
+snapshot_download('Nhatminh1234/ReframeBot-Llama3.1-8B-AWQ', local_dir='./merged_model_awq')
+"
+
+# Guardrail classifier (~250 MB, runs on CPU)
 python -c "
 from huggingface_hub import snapshot_download
 snapshot_download('Nhatminh1234/ReframeBot-Guardrail-DistilBERT', local_dir='./guardrail_model_retrained/best')
 "
 ```
 
-3. Export and quantize the LLM (one-time setup):
-```bash
-# Export: merge base model + DPO adapter to bf16 (~16 GB RAM, no GPU needed)
-uv run python scripts/export_merged_model.py --output ./merged_model
-
-# Quantize to AWQ 4-bit (requires GPU, ~5-10 min in WSL2)
-# In WSL2: pip install autoawq
-python scripts/quantize_awq.py --input ./merged_model --output ./merged_model_awq
-```
-
-4. Start the stack:
+3. Start the stack (pulls API image from Docker Hub automatically):
 ```bash
 docker compose up
 ```
 
-5. Serve the web UI:
+4. Serve the web UI:
 ```bash
 cd web && python -m http.server 8080
 ```
@@ -80,6 +85,18 @@ cp .env.example .env
 python app.py
 ```
 Note: this path uses the original transformers/PEFT in-process loading without vLLM.
+
+### Building from source (advanced)
+
+If you want to rebuild the AWQ model yourself from the DPO adapter:
+```bash
+# Step 1: merge base model + DPO adapter → bf16 safetensors (~16 GB RAM, no GPU needed)
+uv run python scripts/export_merged_model.py --output ./merged_model
+
+# Step 2: AWQ 4-bit quantization (requires GPU, run in WSL2)
+# In WSL2: pip install autoawq
+python scripts/quantize_awq.py --input ./merged_model --output ./merged_model_awq
+```
 
 ## Project Structure
 

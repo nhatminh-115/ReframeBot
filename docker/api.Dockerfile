@@ -11,7 +11,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY pyproject.toml .
 COPY src/ src/
 
-# Install runtime deps only (no torch/transformers/peft — handled by vLLM container)
+# CPU-only torch first — avoids pulling the 2 GB CUDA wheel
+RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
+
+# Install runtime deps (torch already satisfied above)
 RUN pip install --no-cache-dir -e .
 
 COPY app.py .
