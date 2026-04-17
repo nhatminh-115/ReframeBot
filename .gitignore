@@ -45,6 +45,19 @@ build/
 *.log
 *.json.lock
 
+# Merged / quantized models (large — serve via HF or Docker volume)
+/merged_model/
+/merged_model_awq/
+
+# HF download cache (created by export_merged_model.py)
+/hf_cache/
+
+# Generated databases (rebuild with scripts/build_rag_db.py)
+/rag_db/
+
+# Benchmark output
+benchmark_results.json
+
 # Base models (if downloaded locally)
 /Meta-Llama-*/
 /Llama-*/

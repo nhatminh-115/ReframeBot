@@ -6,92 +6,100 @@ ReframeBot is a CBT-oriented chatbot for supporting university students with aca
 
 ## Model Repositories
 
-Our trained models are available on Hugging Face:
+All models are available on Hugging Face:
 
-- **[SFT Adapter](https://huggingface.co/Nhatminh1234/ReframeBot-SFT-Llama3.1-8B)** - Supervised Fine-Tuning adapter for Llama 3.1 8B
-- **[DPO Adapter](https://huggingface.co/Nhatminh1234/ReframeBot-DPO-Llama3.1-8B)** - Direct Preference Optimization adapter
-- **[Guardrail Classifier](https://huggingface.co/Nhatminh1234/ReframeBot-Guardrail-DistilBERT)** - Task classifier for message routing (CBT/Crisis/Out-of-scope)
+| Model | Repository | Description |
+|---|---|---|
+| AWQ Model | [ReframeBot-Llama3.1-8B-AWQ](https://huggingface.co/Nhatminh1234/ReframeBot-Llama3.1-8B-AWQ) | Merged + AWQ 4-bit quantized — ready for vLLM serving |
+| DPO Adapter | [ReframeBot-DPO-Llama3.1-8B](https://huggingface.co/Nhatminh1234/ReframeBot-DPO-Llama3.1-8B) | Direct Preference Optimization LoRA adapter |
+| SFT Adapter | [ReframeBot-SFT-Llama3.1-8B](https://huggingface.co/Nhatminh1234/ReframeBot-SFT-Llama3.1-8B) | Supervised Fine-Tuning LoRA adapter |
+| Guardrail Classifier | [ReframeBot-Guardrail-DistilBERT](https://huggingface.co/Nhatminh1234/ReframeBot-Guardrail-DistilBERT) | 3-class task router (CBT / Crisis / Out-of-scope) |
 
 ## Features
-- Fine-tuned Llama 3.1 8B (DPO adapter)
+- Fine-tuned Llama 3.1 8B (SFT + DPO adapter, merged and served via vLLM)
+- AWQ 4-bit quantization (autoawq) — runs on 8 GB VRAM
+- vLLM serving with PagedAttention and continuous batching
 - Guardrail routing with crisis detection and out-of-scope redirection
 - Optional RAG grounding over a CBT knowledge base
-- FastAPI backend and a lightweight static web UI
+- Dockerized stack (vLLM container + FastAPI container) and a lightweight static web UI
 
 ## Quick Start
 
 ### Prerequisites
 - Python 3.11+
-- CUDA-capable GPU (recommended)
-- 16GB+ RAM
+- CUDA-capable GPU with 8 GB+ VRAM
+- 32 GB RAM (for model export step)
+- Docker Desktop with NVIDIA Container Toolkit
+- WSL2 (for AWQ quantization step)
 
-### Installation
+### Option A — Docker (recommended)
 
-1. Clone the repository:
+1. Clone and configure:
 ```bash
 git clone https://github.com/minhnghiem32131024429/ReframeBot.git
 cd ReframeBot
+cp .env.example .env
+# Set HF_TOKEN in .env (required for gated Llama 3.1 access)
 ```
 
-2. Install dependencies:
+2. Download guardrail model:
 ```bash
-# Runtime only (to run the server)
-pip install -e .
-
-# Including evaluation / push scripts
-pip install -e ".[scripts]"
-
-# Including full training pipeline
-pip install -e ".[train]"
+python -c "
+from huggingface_hub import snapshot_download
+snapshot_download('Nhatminh1234/ReframeBot-Guardrail-DistilBERT', local_dir='./guardrail_model_retrained/best')
+"
 ```
 
-3. Download models from Hugging Face:
-   - **SFT Adapter**: [ReframeBot-SFT-Llama3.1-8B](https://huggingface.co/Nhatminh1234/ReframeBot-SFT-Llama3.1-8B)
-   - **DPO Adapter**: [ReframeBot-DPO-Llama3.1-8B](https://huggingface.co/Nhatminh1234/ReframeBot-DPO-Llama3.1-8B)
-   - **Guardrail Model**: [ReframeBot-Guardrail-DistilBERT](https://huggingface.co/Nhatminh1234/ReframeBot-Guardrail-DistilBERT)
-
-4. Create a local config file:
-   - Copy `.env.example` to `.env`
-   - Set at minimum `ADAPTER_PATH` and `GUARDRAIL_PATH` to your local model directories:
-```env
-ADAPTER_PATH=D:\Work\AI\results_reframebot_DPO\checkpoint-90
-GUARDRAIL_PATH=D:\Work\AI\guardrail_model_retrained\best
-```
-   Notes:
-   - `.env` is git-ignored by design — never commit it.
-   - See `.env.example` for the full list of configurable variables.
-
-5. Run the FastAPI server:
+3. Export and quantize the LLM (one-time setup):
 ```bash
+# Export: merge base model + DPO adapter to bf16 (~16 GB RAM, no GPU needed)
+uv run python scripts/export_merged_model.py --output ./merged_model
+
+# Quantize to AWQ 4-bit (requires GPU, ~5-10 min in WSL2)
+# In WSL2: pip install autoawq
+python scripts/quantize_awq.py --input ./merged_model --output ./merged_model_awq
+```
+
+4. Start the stack:
+```bash
+docker compose up
+```
+
+5. Serve the web UI:
+```bash
+cd web && python -m http.server 8080
+```
+Open: http://localhost:8080/
+
+### Option B — In-process (no Docker)
+
+```bash
+pip install -e ".[inprocess]"
+cp .env.example .env
+# Set ADAPTER_PATH and GUARDRAIL_PATH in .env
 python app.py
 ```
-
-6. Serve the web UI (in a new terminal):
-```bash
-cd web
-python -m http.server 8080
-```
-   - Open: http://localhost:8080/
-
-The UI will call the backend at `http://127.0.0.1:8000/chat`.
+Note: this path uses the original transformers/PEFT in-process loading without vLLM.
 
 ## Project Structure
 
 ```
 ReframeBot/
 ├── app.py                      # Entry point: python app.py
-├── pyproject.toml              # Dependencies (runtime / scripts / train groups)
+├── docker-compose.yml          # vLLM + API containers
+├── docker/api.Dockerfile       # FastAPI container image
+├── pyproject.toml              # Dependencies (runtime / inprocess / scripts / train)
 ├── train.ipynb                 # Training notebook (SFT + DPO + Guardrail)
 ├── src/
 │   └── reframebot/
 │       ├── config.py           # All settings via pydantic-settings + .env
 │       ├── constants.py        # Hotlines, keywords, regex, prototype sentences
 │       ├── router.py           # Task routing logic (TASK_1/2/3 priority chain)
-│       ├── main.py             # FastAPI app, lifespan, /chat endpoint
+│       ├── main.py             # FastAPI app, lifespan, /chat + /chat/stream endpoints
 │       └── services/
 │           ├── guardrail.py    # Guardrail classifier + crisis detection
 │           ├── rag.py          # ChromaDB retrieval
-│           └── llm.py          # LLM loading + inference
+│           └── llm.py          # vLLM client (OpenAI-compatible)
 ├── web/
 │   ├── index.html
 │   ├── style.css
@@ -101,12 +109,13 @@ ReframeBot/
 │   ├── dataset_dpo.jsonl       # DPO training data
 │   └── guardrail_dataset.jsonl
 ├── scripts/
+│   ├── export_merged_model.py  # Merge base + DPO adapter → bf16 safetensors
+│   ├── quantize_awq.py         # AWQ 4-bit quantization (run in WSL2/Linux)
+│   ├── benchmark.py            # Latency / throughput / TTFT benchmark
 │   ├── build_rag_db.py         # Build ChromaDB from knowledge.txt
 │   ├── train_guardrail.py      # Retrain guardrail classifier
 │   ├── evaluate_model.py       # Evaluation + metrics
-│   ├── prepare_guardrail_data.py
-│   ├── push_to_hub.py          # Upload single model to HF Hub
-│   └── push_all_models.py      # Upload all models
+│   └── push_all_models.py      # Upload all models to HF Hub
 ├── docs/
 │   └── SETUP.md
 └── Utils/                      # Background audio/image assets
@@ -142,6 +151,44 @@ Copy `.env.example` to `.env`. Key variables:
 
 ### Customize Colors
 Edit `web/style.css` to change color scheme, glass effects, and more.
+
+## Serving Architecture
+
+```
+User request
+     ↓
+FastAPI container  (port 8000)
+  ├─ Guardrail classifier (DistilBERT, CPU)
+  ├─ Crisis detector (regex + semantic similarity)
+  ├─ RAG retrieval (ChromaDB)
+  └─ HTTP → vLLM container (OpenAI-compatible API)
+               ↓
+         vLLM container  (port 8001)
+           AWQ-Marlin 4-bit Llama 3.1 8B
+           PagedAttention + continuous batching
+```
+
+The LLM is served as a separate vLLM process — the FastAPI app calls it like an external service via the OpenAI client. This separates inference infrastructure from application logic and enables concurrent request batching.
+
+## Inference Performance
+
+Measured on NVIDIA RTX 5070 (8 GB VRAM), AWQ-Marlin 4-bit, `max_model_len=2048`, `--enforce-eager`:
+
+| Metric | Value |
+|---|---|
+| Latency p50 (warm) | 3.3s |
+| Latency p95 (warm) | 5.9s |
+| Time to First Token (TTFT) p50 | 1.09s |
+| Tokens/sec | ~54 tok/s |
+| Throughput (4 concurrent) | 1.1 req/s |
+| VRAM usage | ~5.4 GB / 8 GB |
+
+Cold-start latency (~115s first request) is due to vLLM's initial compilation pass; subsequent requests are warm.
+
+To reproduce:
+```bash
+uv run python scripts/benchmark.py --n 20 --concurrency 4
+```
 
 ## Evaluation Results
 

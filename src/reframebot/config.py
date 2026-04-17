@@ -15,7 +15,9 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    # --- LLM ---
+    # --- LLM (vLLM backend) ---
+    vllm_base_url: str = "http://localhost:8001/v1"
+    # Legacy fields — still used by export_merged_model.py and quantize_awq.py
     base_model_name: str = "meta-llama/Meta-Llama-3.1-8B-Instruct"
     adapter_path: str = ""
 

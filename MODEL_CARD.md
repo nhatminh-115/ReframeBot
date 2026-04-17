@@ -60,7 +60,8 @@ ReframeBot is a CBT-oriented conversational assistant designed for university st
 
 ### Hardware
 - GPU: NVIDIA RTX 5070 (laptop, 8 GB VRAM)
-- Quantization: 4-bit NF4 (bitsandbytes) with bfloat16 compute, enabling training on consumer-grade hardware
+- Training quantization: 4-bit NF4 (bitsandbytes) with bfloat16 compute, enabling training on consumer-grade hardware
+- Serving quantization: AWQ 4-bit (autoawq, GEMM kernel) with awq_marlin backend in vLLM
 
 ### SFT (Supervised Fine-Tuning)
 
@@ -140,6 +141,35 @@ The gap between validation accuracy (99%) and held-out test accuracy (91%) is ex
 | Response Consistency | 0.732 | Cosine similarity between 2 independent runs on the same prompt |
 
 Faithfulness (0.849) exceeding Relevance (0.832) suggests the model grounds well in RAG-retrieved CBT context when it is available.
+
+---
+
+## Serving Infrastructure
+
+The DPO adapter is merged into the base model weights (`merge_and_unload`) and quantized to AWQ 4-bit before deployment. Inference is handled by vLLM with the AWQ-Marlin kernel.
+
+### Quantization pipeline
+
+```
+Llama 3.1 8B Instruct (bf16)
+  + DPO LoRA adapter
+  → merge_and_unload()           # scripts/export_merged_model.py
+  → AWQ 4-bit (autoawq)          # scripts/quantize_awq.py
+  → vLLM (awq_marlin kernel)
+```
+
+### Inference performance
+
+Measured on NVIDIA RTX 5070 (8 GB VRAM), `max_model_len=2048`, `--enforce-eager`:
+
+| Metric | Value |
+|---|---|
+| Latency p50 (warm) | 3.3s |
+| Latency p95 (warm) | 5.9s |
+| Time to First Token (TTFT) p50 | 1.09s |
+| Tokens/sec | ~54 tok/s |
+| Throughput (4 concurrent) | 1.1 req/s |
+| VRAM usage | ~5.4 GB / 8 GB |
 
 ---
 

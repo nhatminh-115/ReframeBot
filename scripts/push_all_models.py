@@ -44,6 +44,11 @@ MODELS = [
         "path": os.environ.get("GUARDRAIL_PATH", ""),
         "repo_id": "Nhatminh1234/ReframeBot-Guardrail-DistilBERT",
     },
+    {
+        "name": "Merged AWQ Model",
+        "path": os.environ.get("AWQ_MODEL_PATH", str(_REPO_ROOT / "merged_model_awq")),
+        "repo_id": "Nhatminh1234/ReframeBot-Llama3.1-8B-AWQ",
+    },
 ]
 
 from huggingface_hub import HfApi  # noqa: E402

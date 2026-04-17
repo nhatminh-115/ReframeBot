@@ -1,29 +1,32 @@
-"""LLM inference service.
+"""LLM inference service — vLLM backend via OpenAI-compatible API.
 
 Responsibilities:
-- Load the base Llama model + DPO adapter once at startup.
+- Connect to a running vLLM server at startup.
 - Generate CBT/OOS responses with optional RAG context injection.
 - Generate short empathy responses for crisis turns.
+- Stream tokens for the /chat/stream endpoint.
+
+Replaces the in-process transformers/PEFT loading with HTTP calls to
+vLLM's OpenAI-compatible endpoint, enabling:
+  - PagedAttention memory management
+  - Continuous batching across concurrent requests
+  - Clean separation between serving infrastructure and app logic
 """
 from __future__ import annotations
 
 import logging
-from pathlib import Path
-from threading import Thread
-from typing import Dict, Iterator, List, Optional
+import time
+from typing import Dict, Iterator, List
 
-import torch
-from peft import PeftModel
-from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig, TextIteratorStreamer
+from openai import OpenAI
 
 from reframebot.config import Settings
 from reframebot.constants import ACCIDENTAL_CRISIS_TRIGGERS
 
 logger = logging.getLogger(__name__)
 
-_model = None
-_tokenizer: Optional[AutoTokenizer] = None
-_terminators: Optional[List[int]] = None
+_client: OpenAI | None = None
+_model_name: str = "reframebot"
 
 _BASE_SYSTEM_PROMPT = """\
 You are ReframeBot, a specialized AI assistant. Your primary goal is to help university students with academic stress using CBT Socratic questioning.
@@ -48,42 +51,29 @@ _CRISIS_EMPATHY_PROMPT = (
 
 
 def load(settings: Settings) -> None:
-    global _model, _tokenizer, _terminators
+    global _client, _model_name
 
-    adapter = settings.adapter_path
-    if not adapter or not Path(adapter).exists():
-        raise FileNotFoundError(
-            f"DPO adapter not found at '{adapter}'. "
-            "Set ADAPTER_PATH in .env pointing to your local checkpoint."
-        )
+    base_url = settings.vllm_base_url
+    logger.info("Connecting to vLLM at %s", base_url)
 
-    logger.info("Loading tokenizer from: %s", settings.base_model_name)
-    _tokenizer = AutoTokenizer.from_pretrained(settings.base_model_name)
-    _tokenizer.pad_token = _tokenizer.eos_token
+    _client = OpenAI(base_url=base_url, api_key="ignored")
 
-    bnb_config = BitsAndBytesConfig(
-        load_in_4bit=True,
-        bnb_4bit_quant_type="nf4",
-        bnb_4bit_compute_dtype=torch.bfloat16,
-    )
-    logger.info("Loading base model: %s", settings.base_model_name)
-    base_model = AutoModelForCausalLM.from_pretrained(
-        settings.base_model_name,
-        quantization_config=bnb_config,
-        device_map={"": 0},
-        trust_remote_code=True,
-    )
+    # Verify the server is up and the model is available
+    try:
+        models = _client.models.list()
+        available = [m.id for m in models.data]
+        logger.info("vLLM models available: %s", available)
+        if _model_name not in available and available:
+            _model_name = available[0]
+            logger.info("Using model: %s", _model_name)
+    except Exception as exc:
+        logger.error("vLLM health check failed: %s", exc)
+        raise RuntimeError(
+            f"Cannot reach vLLM server at {base_url}. "
+            "Ensure the vLLM container is running (docker compose up vllm)."
+        ) from exc
 
-    logger.info("Loading DPO adapter from: %s", adapter)
-    merged = PeftModel.from_pretrained(base_model, adapter).merge_and_unload()
-    merged.eval()
-    _model = merged
-
-    _terminators = [
-        _tokenizer.eos_token_id,
-        _tokenizer.convert_tokens_to_ids("<|eot_id|>"),
-    ]
-    logger.info("LLM ready on device: %s", next(_model.parameters()).device)
+    logger.info("LLM ready — vLLM backend at %s (model: %s)", base_url, _model_name)
 
 
 # ---------------------------------------------------------------------------
@@ -91,23 +81,21 @@ def load(settings: Settings) -> None:
 # ---------------------------------------------------------------------------
 
 def _generate(messages: List[Dict[str, str]], max_new_tokens: int, temperature: float) -> str:
-    assert _model is not None and _tokenizer is not None
-    prompt = _tokenizer.apply_chat_template(
-        messages, add_generation_prompt=True, tokenize=False
+    assert _client is not None
+    t0 = time.perf_counter()
+    response = _client.chat.completions.create(
+        model=_model_name,
+        messages=messages,  # type: ignore[arg-type]
+        max_tokens=max_new_tokens,
+        temperature=temperature,
+        top_p=0.9,
     )
-    inputs = _tokenizer(prompt, return_tensors="pt", padding=False).to(_model.device)
-    with torch.no_grad():
-        outputs = _model.generate(
-            input_ids=inputs.input_ids,
-            attention_mask=inputs.attention_mask,
-            max_new_tokens=max_new_tokens,
-            eos_token_id=_terminators,
-            do_sample=True,
-            temperature=temperature,
-            top_p=0.9,
-        )
-    response_ids = outputs[0][inputs.input_ids.shape[-1]:]
-    return _tokenizer.decode(response_ids, skip_special_tokens=True)
+    elapsed = time.perf_counter() - t0
+    content = response.choices[0].message.content or ""
+    tokens = response.usage.completion_tokens if response.usage else 0
+    tps = tokens / elapsed if elapsed > 0 else 0
+    logger.debug("Generated %d tokens in %.2fs (%.1f tok/s)", tokens, elapsed, tps)
+    return content
 
 
 # ---------------------------------------------------------------------------
@@ -138,8 +126,6 @@ def get_response(
     messages = [{"role": "system", "content": system_prompt}, *history]
     response = _generate(messages, max_new_tokens=512, temperature=0.6)
 
-    # Safeguard: if the LLM accidentally echoed crisis-style content on a
-    # non-crisis task, strip it so callers can handle crisis uniformly.
     if task_label != "TASK_2":
         response_lower = response.lower()
         if any(t in response_lower for t in ACCIDENTAL_CRISIS_TRIGGERS):
@@ -164,7 +150,7 @@ def stream_response(
     rag_context: str = "",
 ) -> Iterator[str]:
     """Stream tokens for a CBT (TASK_1) or out-of-scope (TASK_3) response."""
-    assert _model is not None and _tokenizer is not None
+    assert _client is not None
 
     system_prompt = _BASE_SYSTEM_PROMPT
     if rag_context:
@@ -180,25 +166,28 @@ def stream_response(
         system_prompt += _TASK3_OVERRIDE
 
     messages = [{"role": "system", "content": system_prompt}, *history]
-    prompt = _tokenizer.apply_chat_template(
-        messages, add_generation_prompt=True, tokenize=False
-    )
-    inputs = _tokenizer(prompt, return_tensors="pt", padding=False).to(_model.device)
 
-    streamer = TextIteratorStreamer(
-        _tokenizer, skip_prompt=True, skip_special_tokens=True
-    )
-    generation_kwargs: Dict = {
-        "input_ids": inputs.input_ids,
-        "attention_mask": inputs.attention_mask,
-        "max_new_tokens": 512,
-        "eos_token_id": _terminators,
-        "do_sample": True,
-        "temperature": 0.6,
-        "top_p": 0.9,
-        "streamer": streamer,
-    }
-    thread = Thread(target=_model.generate, kwargs=generation_kwargs)
-    thread.start()
-    yield from streamer
-    thread.join()
+    t0 = time.perf_counter()
+    first_token = True
+    token_count = 0
+
+    with _client.chat.completions.create(
+        model=_model_name,
+        messages=messages,  # type: ignore[arg-type]
+        max_tokens=512,
+        temperature=0.6,
+        top_p=0.9,
+        stream=True,
+    ) as stream:
+        for chunk in stream:
+            delta = chunk.choices[0].delta.content
+            if delta:
+                if first_token:
+                    ttft = time.perf_counter() - t0
+                    logger.debug("Time to first token: %.3fs", ttft)
+                    first_token = False
+                token_count += 1
+                yield delta
+
+    elapsed = time.perf_counter() - t0
+    logger.debug("Stream complete: %d tokens in %.2fs (%.1f tok/s)", token_count, elapsed, token_count / elapsed if elapsed > 0 else 0)

@@ -1,0 +1,51 @@
+services:
+  vllm:
+    image: vllm/vllm-openai:latest
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    volumes:
+      - ${MERGED_MODEL_PATH:-./merged_model_awq}:/models/reframebot:ro
+    environment:
+      - HF_TOKEN=${HF_TOKEN:-}
+    command: >
+      --model /models/reframebot
+      --tokenizer meta-llama/Meta-Llama-3.1-8B-Instruct
+      --quantization awq_marlin
+      --dtype float16
+      --max-model-len 2048
+      --gpu-memory-utilization 0.80
+      --enforce-eager
+      --served-model-name reframebot
+      --trust-remote-code
+    ports:
+      - "8001:8000"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 120s
+
+  api:
+    build:
+      context: .
+      dockerfile: docker/api.Dockerfile
+    env_file:
+      - .env
+    environment:
+      - VLLM_BASE_URL=http://vllm:8000/v1
+      - GUARDRAIL_PATH=/models/guardrail
+      - RAG_DB_PATH=/app/rag_db
+    depends_on:
+      vllm:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./guardrail_model_retrained/best:/models/guardrail:ro
+      - ./rag_db:/app/rag_db
