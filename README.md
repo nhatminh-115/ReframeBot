@@ -246,8 +246,6 @@ All metrics were measured on a held-out test set not seen during training.
 
 AWQ quantization does not degrade quality — all LLM metrics are equal to or better than the NF4 baseline. Faithfulness > Relevance in both modes suggests the model grounds well in retrieved CBT context when RAG is active.
 
-Full report: [`evaluation_report.json`](evaluation_report.json) | Radar chart: [`evaluation_summary.png`](evaluation_summary.png)
-
 To reproduce:
 ```bash
 docker compose up -d vllm && uv run python scripts/evaluate_model.py --mode vllm
