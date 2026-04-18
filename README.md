@@ -246,6 +246,16 @@ All metrics were measured on a held-out test set not seen during training.
 
 AWQ quantization does not degrade quality — all LLM metrics are equal to or better than the NF4 baseline. Faithfulness > Relevance in both modes suggests the model grounds well in retrieved CBT context when RAG is active.
 
+### Methodology
+
+The quality of the system is evaluated across five dimensions using the `scripts/evaluate_model.py` suite:
+
+- **Accuracy**: Classification accuracy of the DistilBERT guardrail on a held-out test set.
+- **Consistency**: Reliability of responses. Measured by the **Cosine Similarity** (via `all-MiniLM-L6-v2`) between two independent outputs for the same prompt.
+- **Semantic Relevance**: Alignment with ground-truth answers. Calculated using **BERTScore F1** (generated response vs. reference).
+- **Context Faithfulness**: RAG grounding quality. Calculated using **BERTScore F1** (generated response vs. retrieved knowledge base context).
+- **Response Complexity**: A **Gaussian score** (target = 100 words, $\sigma$ = 80) that penalizes responses that are excessively short or long.
+
 To reproduce:
 ```bash
 docker compose up -d vllm && uv run python scripts/evaluate_model.py --mode vllm
