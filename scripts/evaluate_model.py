@@ -8,10 +8,16 @@ Metrics:
   5. Complexity      — Gaussian score penalising responses far from target length
 
 Usage:
+    # In-process mode (loads DPO adapter + NF4 bitsandbytes, no vLLM needed)
     uv run python scripts/evaluate_model.py
+
+    # vLLM mode (evaluates the AWQ quantized model via the running vLLM container)
+    docker compose up -d vllm   # wait for health check
+    uv run python scripts/evaluate_model.py --mode vllm --vllm-url http://localhost:8001/v1
 """
 from __future__ import annotations
 
+import argparse
 import json
 import sys
 from pathlib import Path
@@ -25,7 +31,7 @@ from sklearn.metrics import accuracy_score
 from tqdm import tqdm
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
-load_dotenv(_REPO_ROOT / ".env")
+load_dotenv(_REPO_ROOT / ".env", override=True)
 
 import os  # noqa: E402 — must follow dotenv load
 
@@ -129,17 +135,53 @@ def generate_response(
     return tokenizer.decode(outputs[0][inputs.input_ids.shape[-1]:], skip_special_tokens=True)
 
 
+def generate_response_vllm(
+    client,
+    user_message: str,
+    task_label: str = "TASK_1",
+    rag_context: str = "",
+) -> str:
+    """Generate a response by calling the vLLM OpenAI-compatible endpoint."""
+    if task_label == "TASK_2":
+        return "I am deeply concerned for your safety. Please reach out: National Hotline 1900 1267."
+
+    system_prompt = "You are ReframeBot, helping students with academic stress using CBT."
+    if task_label == "TASK_3":
+        system_prompt = "You are ReframeBot. Politely decline non-academic topics and redirect."
+    elif rag_context:
+        system_prompt += f"\n\nKNOWLEDGE BASE:\n{rag_context}"
+
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_message},
+    ]
+    response = client.chat.completions.create(
+        model="reframebot",
+        messages=messages,
+        max_tokens=256,
+        temperature=0.6,
+        top_p=0.9,
+    )
+    return response.choices[0].message.content or ""
+
+
 # ---------------------------------------------------------------------------
 # Evaluator
 # ---------------------------------------------------------------------------
 
 class ModelEvaluator:
-    def __init__(self, model, tokenizer, guardrail_pipeline, rag_collection) -> None:
+    def __init__(self, model, tokenizer, guardrail_pipeline, rag_collection, vllm_client=None) -> None:
         self.model = model
         self.tokenizer = tokenizer
         self.guardrail = guardrail_pipeline
         self.rag = rag_collection
+        self.vllm_client = vllm_client
         self.results: Dict[str, float] = {}
+
+    def _generate(self, user_message: str, task_label: str = "TASK_1", rag_context: str = "") -> str:
+        if self.vllm_client is not None:
+            return generate_response_vllm(self.vllm_client, user_message, task_label, rag_context)
+        return generate_response(self.model, self.tokenizer, user_message, task_label, rag_context)
 
     def evaluate_accuracy(self, test_data: List[Dict]) -> float:
         print("\n[1] Accuracy (guardrail classifier) ...")
@@ -156,7 +198,7 @@ class ModelEvaluator:
         embedder = SentenceTransformer("all-MiniLM-L6-v2")
         scores = []
         for prompt in tqdm(prompts):
-            responses = [generate_response(self.model, self.tokenizer, prompt) for _ in range(num_samples)]
+            responses = [self._generate(prompt) for _ in range(num_samples)]
             emb = embedder.encode(responses)
             scores.append(float(util.cos_sim(emb[0], emb[1]).item()))
         avg = float(np.mean(scores))
@@ -169,7 +211,7 @@ class ModelEvaluator:
         from bert_score import score as bert_score_func
         cands, refs = [], []
         for item in tqdm(test_data):
-            cands.append(generate_response(self.model, self.tokenizer, item["question"]))
+            cands.append(self._generate(item["question"]))
             refs.append(item.get("expected_answer", item["question"]))
         try:
             _, _, f1 = bert_score_func(cands, refs, lang="en", verbose=False)
@@ -189,7 +231,7 @@ class ModelEvaluator:
             context = retrieve_context(self.rag, item["question"])
             if not context:
                 continue
-            cands.append(generate_response(self.model, self.tokenizer, item["question"], rag_context=context))
+            cands.append(self._generate(item["question"], rag_context=context))
             refs.append(context)
         if not cands:
             print("    [warn] No RAG context available — skipping.")
@@ -208,16 +250,27 @@ class ModelEvaluator:
         print("\n[5] Response length score (Gaussian, target=100 words) ...")
         scores = []
         for prompt in tqdm(prompts):
-            length = len(generate_response(self.model, self.tokenizer, prompt).split())
+            length = len(self._generate(prompt).split())
             scores.append(float(np.exp(-0.5 * ((length - target) / sigma) ** 2)))
         avg = float(np.mean(scores))
         self.results["complexity"] = avg
         print(f"    -> {avg:.3f}")
         return avg
 
-    def save_report(self) -> None:
+    def save_report(self, mode: str = "inprocess") -> None:
+        section_key = "awq_vllm" if mode == "vllm" else "base_dpo_nf4"
+        model_label = "AWQ 4-bit (vLLM)" if mode == "vllm" else "Base + DPO adapter (NF4, in-process)"
+
+        existing: dict = {}
+        if REPORT_FILE.exists():
+            try:
+                existing = json.loads(REPORT_FILE.read_text(encoding="utf-8"))
+            except json.JSONDecodeError:
+                pass
+
+        existing[section_key] = {"model": model_label, **self.results}
         with open(REPORT_FILE, "w", encoding="utf-8") as f:
-            json.dump(self.results, f, indent=2)
+            json.dump(existing, f, indent=2)
 
         labels = ["Accuracy", "Consistency", "Relevance (BERT)", "Faithfulness (BERT)", "Length Score"]
         keys = ["accuracy", "consistency", "relevance_bert", "faithfulness_bert", "complexity"]
@@ -245,10 +298,28 @@ class ModelEvaluator:
 # Entry point
 # ---------------------------------------------------------------------------
 
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Evaluate the ReframeBot system.")
+    parser.add_argument(
+        "--mode",
+        choices=["inprocess", "vllm"],
+        default="inprocess",
+        help=(
+            "inprocess: load the DPO adapter in-process via bitsandbytes NF4 (default). "
+            "vllm: call the running vLLM container serving the AWQ quantized model."
+        ),
+    )
+    parser.add_argument(
+        "--vllm-url",
+        default="http://localhost:8001/v1",
+        help="Base URL for the vLLM OpenAI-compatible endpoint (used in --mode vllm).",
+    )
+    return parser.parse_args()
+
+
 def main() -> None:
-    if not ADAPTER_PATH:
-        print("ERROR: ADAPTER_PATH is not set in .env")
-        sys.exit(1)
+    args = _parse_args()
+
     if not GUARDRAIL_PATH:
         print("ERROR: GUARDRAIL_PATH is not set in .env")
         sys.exit(1)
@@ -263,19 +334,41 @@ def main() -> None:
     print("--- Loading models ---")
     print("[1/3] Guardrail ...")
     guardrail_pipeline = _load_guardrail(GUARDRAIL_PATH)
-    print("[2/3] LLM ...")
-    model, tokenizer = _load_llm(BASE_MODEL_NAME, ADAPTER_PATH)
+
+    model = None
+    tokenizer = None
+    vllm_client = None
+
+    if args.mode == "vllm":
+        print(f"[2/3] vLLM client -> {args.vllm_url}")
+        try:
+            from openai import OpenAI
+            vllm_client = OpenAI(base_url=args.vllm_url, api_key="ignored")
+            # Verify connection
+            vllm_client.models.list()
+            print("      Connected.")
+        except Exception as exc:
+            print(f"ERROR: Cannot reach vLLM endpoint at {args.vllm_url}: {exc}")
+            print("       Start it with: docker compose up -d vllm")
+            sys.exit(1)
+    else:
+        if not ADAPTER_PATH:
+            print("ERROR: ADAPTER_PATH is not set in .env (required for --mode inprocess)")
+            sys.exit(1)
+        print("[2/3] LLM (NF4 in-process) ...")
+        model, tokenizer = _load_llm(BASE_MODEL_NAME, ADAPTER_PATH)
+
     print("[3/3] RAG ...")
     rag_collection = _load_rag(RAG_DB_PATH)
     print("--- Ready ---\n")
 
-    evaluator = ModelEvaluator(model, tokenizer, guardrail_pipeline, rag_collection)
+    evaluator = ModelEvaluator(model, tokenizer, guardrail_pipeline, rag_collection, vllm_client=vllm_client)
     evaluator.evaluate_accuracy(data["accuracy_test"])
     evaluator.evaluate_consistency(data["consistency_prompts"])
     evaluator.evaluate_semantic_relevance(data["relevance_test"])
     evaluator.evaluate_faithfulness(data["faithfulness_test"])
     evaluator.evaluate_complexity(data["complexity_prompts"])
-    evaluator.save_report()
+    evaluator.save_report(mode=args.mode)
 
 
 if __name__ == "__main__":

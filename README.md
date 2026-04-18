@@ -6,14 +6,12 @@ ReframeBot is a CBT-oriented chatbot for supporting university students with aca
 
 ## Model Repositories
 
-All models are available on Hugging Face:
-
-| Model | Repository | Description |
+| Model | Repository | Use |
 |---|---|---|
-| AWQ Model | [ReframeBot-Llama3.1-8B-AWQ](https://huggingface.co/Nhatminh1234/ReframeBot-Llama3.1-8B-AWQ) | Merged + AWQ 4-bit quantized — ready for vLLM serving |
-| DPO Adapter | [ReframeBot-DPO-Llama3.1-8B](https://huggingface.co/Nhatminh1234/ReframeBot-DPO-Llama3.1-8B) | Direct Preference Optimization LoRA adapter |
-| SFT Adapter | [ReframeBot-SFT-Llama3.1-8B](https://huggingface.co/Nhatminh1234/ReframeBot-SFT-Llama3.1-8B) | Supervised Fine-Tuning LoRA adapter |
-| Guardrail Classifier | [ReframeBot-Guardrail-DistilBERT](https://huggingface.co/Nhatminh1234/ReframeBot-Guardrail-DistilBERT) | 3-class task router (CBT / Crisis / Out-of-scope) |
+| AWQ Model | [ReframeBot-Llama3.1-8B-AWQ](https://huggingface.co/Nhatminh1234/ReframeBot-Llama3.1-8B-AWQ) | **Inference** — merged + AWQ 4-bit, served by vLLM |
+| Guardrail Classifier | [ReframeBot-Guardrail-DistilBERT](https://huggingface.co/Nhatminh1234/ReframeBot-Guardrail-DistilBERT) | **Inference** — 3-class task router (CBT / Crisis / Out-of-scope) |
+| DPO Adapter | [ReframeBot-DPO-Llama3.1-8B](https://huggingface.co/Nhatminh1234/ReframeBot-DPO-Llama3.1-8B) | Training artifact — LoRA adapter before merging |
+| SFT Adapter | [ReframeBot-SFT-Llama3.1-8B](https://huggingface.co/Nhatminh1234/ReframeBot-SFT-Llama3.1-8B) | Training artifact — intermediate SFT checkpoint |
 
 The API container image is published on Docker Hub:
 
@@ -128,11 +126,13 @@ ReframeBot/
 ├── scripts/
 │   ├── export_merged_model.py  # Merge base + DPO adapter → bf16 safetensors
 │   ├── quantize_awq.py         # AWQ 4-bit quantization (run in WSL2/Linux)
-│   ├── benchmark.py            # Latency / throughput / TTFT benchmark
+│   ├── benchmark.py            # Latency / throughput / TTFT benchmark (vLLM)
+│   ├── benchmark_inprocess.py  # Latency / throughput / TTFT benchmark (NF4)
 │   ├── build_rag_db.py         # Build ChromaDB from knowledge.txt
 │   ├── train_guardrail.py      # Retrain guardrail classifier
-│   ├── evaluate_model.py       # Evaluation + metrics
-│   └── push_all_models.py      # Upload all models to HF Hub
+│   ├── evaluate_model.py       # Evaluation + metrics (--mode inprocess|vllm)
+│   ├── push_all_models.py      # Upload all models to HF Hub
+│   └── push_model_cards.py     # Sync model cards to HF Hub
 ├── docs/
 │   └── SETUP.md
 └── Utils/                      # Background audio/image assets
@@ -187,42 +187,72 @@ FastAPI container  (port 8000)
 
 The LLM is served as a separate vLLM process — the FastAPI app calls it like an external service via the OpenAI client. This separates inference infrastructure from application logic and enables concurrent request batching.
 
+## Model Sizes
+
+| Checkpoint | Format | Disk size |
+|---|---|---|
+| Merged model (base + DPO adapter) | bf16 safetensors | 15 GB |
+| AWQ quantized (served by vLLM) | AWQ 4-bit | 5.4 GB |
+| Guardrail classifier | DistilBERT fp32 | ~250 MB |
+
+The bf16 merged model (15 GB) exceeds the 8 GB VRAM of the development GPU and cannot be served unquantized on this hardware. AWQ 4-bit quantization reduces the footprint to 5.4 GB (2.8x compression), enabling deployment on a consumer 8 GB card.
+
 ## Inference Performance
 
-Measured on NVIDIA RTX 5070 (8 GB VRAM), AWQ-Marlin 4-bit, `max_model_len=2048`, `--enforce-eager`:
+Measured on NVIDIA RTX 5070 (8 GB VRAM):
 
-| Metric | Value |
-|---|---|
-| Latency p50 (warm) | 3.3s |
-| Latency p95 (warm) | 5.9s |
-| Time to First Token (TTFT) p50 | 1.09s |
-| Tokens/sec | ~54 tok/s |
-| Throughput (4 concurrent) | 1.1 req/s |
-| VRAM usage | ~5.4 GB / 8 GB |
+| Metric | AWQ 4-bit (vLLM) | Base + DPO (NF4, in-process) | Speedup |
+|---|---|---|---|
+| Latency p50 | 3.3s | 106.8s | **32x** |
+| Latency p95 | 5.9s | 124.1s | **21x** |
+| Time to First Token (TTFT) p50 | 1.09s | 12.3s | **11x** |
+| Tokens/sec | ~54 tok/s | ~2.1 tok/s | **26x** |
+| Throughput (4 concurrent) | 1.1 req/s | — | — |
+| VRAM usage at runtime | ~5.4 GB dedicated | ~8 GB dedicated + ~7 GB shared (system RAM) | — |
 
-Cold-start latency (~115s first request) is due to vLLM's initial compilation pass; subsequent requests are warm.
+AWQ + vLLM (PagedAttention, continuous batching, Marlin kernel) delivers 26–32x faster inference vs in-process NF4 loading. The NF4 path spills into shared VRAM (system RAM) on Windows, has no kernel optimization or batching, and is suitable for evaluation and offline use only.
+
+Cold-start latency (~115s first request on vLLM) is due to CUDA kernel compilation; subsequent requests are warm.
 
 To reproduce:
 ```bash
+# AWQ via vLLM
+docker compose up -d vllm
 uv run python scripts/benchmark.py --n 20 --concurrency 4
+
+# Base+DPO NF4 in-process
+python scripts/benchmark_inprocess.py --n 10
 ```
 
 ## Evaluation Results
 
 All metrics were measured on a held-out test set not seen during training.
 
-| Metric | Value | Description |
-|---|---|---|
-| Guardrail Accuracy | **91.1%** | Task classification on held-out evaluation set |
-| Guardrail F1 (macro) | **0.99** | Precision/recall balance across all 3 task classes |
-| BERTScore Relevance | **0.832** | Semantic similarity between generated and reference responses |
-| BERTScore Faithfulness | **0.849** | Alignment between generated response and retrieved RAG context |
-| Response Consistency | **0.732** | Cosine similarity between repeated responses to the same prompt |
+**Guardrail classifier** (same model regardless of LLM serving mode):
 
-**Notes:**
-- Guardrail F1=0.99 was measured on the 20% validation split (335 samples) during training; 91.1% reflects a separate, harder evaluation set.
-- Faithfulness > Relevance suggests the model grounds well in retrieved context when RAG is active.
-- Full evaluation report: [`evaluation_report.json`](evaluation_report.json) | Radar chart: [`evaluation_summary.png`](evaluation_summary.png)
+| Metric | Score | Notes |
+|---|---|---|
+| Accuracy (held-out test set) | **93.3%** | Separate harder evaluation set |
+| Accuracy (validation split) | **99.0%** | 20% split, 335 samples |
+| F1 macro (validation split) | **0.99** | |
+
+**LLM quality** (varies by serving mode):
+
+| Metric | AWQ 4-bit (vLLM) | Base + DPO (NF4) |
+|---|---|---|
+| BERTScore Relevance | **0.865** | 0.832 |
+| BERTScore Faithfulness | **0.858** | 0.849 |
+| Response Consistency | **0.775** | 0.732 |
+
+AWQ quantization does not degrade quality — all LLM metrics are equal to or better than the NF4 baseline. Faithfulness > Relevance in both modes suggests the model grounds well in retrieved CBT context when RAG is active.
+
+Full report: [`evaluation_report.json`](evaluation_report.json) | Radar chart: [`evaluation_summary.png`](evaluation_summary.png)
+
+To reproduce:
+```bash
+docker compose up -d vllm && uv run python scripts/evaluate_model.py --mode vllm
+uv run python scripts/evaluate_model.py --mode inprocess
+```
 
 ## Training
 
@@ -232,7 +262,6 @@ See `train.ipynb` for the complete training pipeline:
 3. **Guardrail Training** - Task classification model
 
 Optional scripts:
-- `scripts/prepare_guardrail_data.py`: merge + deduplicate guardrail data (and add hard negatives)
 - `scripts/train_guardrail.py`: retrain the guardrail classifier from a JSONL dataset
 
 ## Contributing

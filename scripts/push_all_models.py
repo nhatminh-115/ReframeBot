@@ -23,6 +23,8 @@ load_dotenv(_REPO_ROOT / ".env")
 
 import os  # noqa: E402
 
+os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
+
 HF_TOKEN = os.environ.get("HF_TOKEN", "")
 if not HF_TOKEN:
     print("ERROR: HF_TOKEN is not set in .env")
@@ -51,12 +53,18 @@ MODELS = [
     },
 ]
 
-from huggingface_hub import HfApi  # noqa: E402
+from huggingface_hub import HfApi 
 
 api = HfApi(token=HF_TOKEN)
 
 
 def main() -> None:
+    try:
+        import hf_transfer
+        print("HF Transfer enabled - using high-speed Rust uploader.")
+    except ImportError:
+        print("hf-transfer not found - using standard uploader. (Install with 'pip install hf-transfer' for better reliability)")
+
     for model in MODELS:
         name, path, repo_id = model["name"], model["path"], model["repo_id"]
         if not path:
@@ -66,7 +74,10 @@ def main() -> None:
             print(f"SKIP {name}: path does not exist — {path}")
             continue
 
-        print(f"Uploading {name} from {path} -> {repo_id} ...")
+        print(f"\nUploading {name} ...")
+        print(f"   Source: {path}")
+        print(f"   Target: https://huggingface.co/{repo_id}")
+        
         try:
             api.upload_folder(
                 folder_path=path,
@@ -74,11 +85,11 @@ def main() -> None:
                 repo_type="model",
                 commit_message=f"Upload {name}",
             )
-            print(f"  done: https://huggingface.co/{repo_id}")
+            print(f"Done: {name}")
         except Exception as exc:
-            print(f"  ERROR: {exc}")
+            print(f"ERROR uploading {name}: {exc}")
 
-    print("Finished.")
+    print("\nAll tasks finished.")
 
 
 if __name__ == "__main__":

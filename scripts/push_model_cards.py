@@ -281,6 +281,82 @@ crisis signal.
 GitHub: [ReframeBot](https://github.com/minhnghiem32131024429/ReframeBot)
 """
 
+_AWQ_CARD = """\
+---
+language:
+- en
+license: apache-2.0
+base_model: meta-llama/Meta-Llama-3.1-8B-Instruct
+tags:
+- awq
+- quantized
+- vllm
+- cbt
+- mental-health
+- academic-stress
+- chatbot
+pipeline_tag: text-generation
+---
+
+# ReframeBot-Llama3.1-8B-AWQ
+
+4-bit AWQ quantized version of the merged [ReframeBot-DPO-Llama3.1-8B](https://huggingface.co/Nhatminh1234/ReframeBot-DPO-Llama3.1-8B).
+Optimized for high-throughput serving with **vLLM**.
+
+This model combines the base Llama 3.1 8B Instruct model with the DPO-aligned CBT adapter, then compresses it using Activation-aware Weight Quantization (AWQ) for efficient production deployment.
+
+## Usage
+
+### vLLM (Recommended)
+
+```python
+from vllm import LLM, SamplingParams
+
+llm = LLM(model="Nhatminh1234/ReframeBot-Llama3.1-8B-AWQ", quantization="awq")
+sampling_params = SamplingParams(temperature=0.7, top_p=0.9, max_tokens=256)
+
+prompts = ["I'm feeling so overwhelmed with my thesis..."]
+outputs = llm.generate(prompts, sampling_params)
+```
+
+### Transformers
+
+```python
+from transformers import AutoModelForCausalLM, AutoTokenizer
+
+model_id = "Nhatminh1234/ReframeBot-Llama3.1-8B-AWQ"
+tokenizer = AutoTokenizer.from_pretrained(model_id)
+model = AutoModelForCausalLM.from_pretrained(model_id, device_map="auto")
+```
+
+## Quantization Details
+
+| Parameter | Value |
+|---|---|
+| Quantization Method | AWQ (Activation-aware Weight Quantization) |
+| Bits | 4-bit |
+| Group Size | 128 |
+| Version | GEMM |
+| Calibration Dataset | ReframeBot Socratic Dialogue Dataset (32 samples) |
+| Hardware used | NVIDIA RTX 5070 (laptop, 8 GB VRAM) |
+
+## Model Pipeline
+
+1. **Base Model**: Llama 3.1 8B Instruct
+2. **Stage 1 (SFT)**: Fine-tuned on 4.5k CBT dialogues.
+3. **Stage 2 (DPO)**: Aligned with 1.4k preference pairs for empathy.
+4. **Stage 3 (Merge)**: Merged adapter into base model.
+5. **Stage 4 (Quantize)**: AWQ 4-bit quantization for serving.
+
+## Intended Use
+
+Designed for production deployment in the ReframeBot system. Must be used with the accompanying Guardrail and RAG components for safe and accurate operation. Not a substitute for professional mental health care.
+
+## Project
+
+GitHub: [ReframeBot](https://github.com/minhnghiem32131024429/ReframeBot)
+"""
+
 # ---------------------------------------------------------------------------
 # Push
 # ---------------------------------------------------------------------------
@@ -289,6 +365,7 @@ CARDS = {
     "Nhatminh1234/ReframeBot-SFT-Llama3.1-8B": _SFT_CARD,
     "Nhatminh1234/ReframeBot-DPO-Llama3.1-8B": _DPO_CARD,
     "Nhatminh1234/ReframeBot-Guardrail-DistilBERT": _GUARDRAIL_CARD,
+    "Nhatminh1234/ReframeBot-Llama3.1-8B-AWQ": _AWQ_CARD,
 }
 
 

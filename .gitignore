@@ -57,6 +57,13 @@ build/
 
 # Benchmark output
 benchmark_results.json
+benchmark_inprocess_results.json
+
+# pytest
+.pytest_cache/
+
+# Generated evaluation charts (keep evaluation_report.json and evaluation_summary.png)
+evaluation_accuracy.png
 
 # Base models (if downloaded locally)
 /Meta-Llama-*/
@@ -79,3 +86,11 @@ desktop.ini
 
 # UI assets (audio/video/image — use Git LFS or host externally)
 Utils/
+
+
+# Evaluation report
+evaluation_report.json
+evaluation_summary.png
+ 
+#Model Card 
+MODEL_CARD.md

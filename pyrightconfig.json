@@ -1,7 +1,0 @@
-{
-  "include": ["src", "app.py", "scripts"],
-  "venvPath": ".",
-  "venv": ".venv",
-  "pythonVersion": "3.11",
-  "typeCheckingMode": "basic"
-}

@@ -1,7 +1,0 @@
-{
-  "accuracy": 0.9111111111111111,
-  "consistency": 0.7322275876998902,
-  "relevance_bert": 0.8321880102157593,
-  "faithfulness_bert": 0.8491959571838379,
-  "complexity": 0.598928829981187
-}
