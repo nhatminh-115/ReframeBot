@@ -85,7 +85,7 @@ def main():
     parser.add_argument("--lr", type=float, default=2e-5)
     parser.add_argument("--batch", type=int, default=16)
     parser.add_argument("--max_len", type=int, default=256)
-    parser.add_argument("--val_ratio", type=float, default=0.1)
+    parser.add_argument("--val_ratio", type=float, default=0.2)  # 0.2 matches the published run (335 val samples)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--patience", type=int, default=2)
     args = parser.parse_args()

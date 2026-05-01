@@ -28,20 +28,26 @@ logger = logging.getLogger(__name__)
 _client: OpenAI | None = None
 _model_name: str = "reframebot"
 
-_BASE_SYSTEM_PROMPT = """\
-You are ReframeBot, a specialized AI assistant. Your primary goal is to help university students with academic stress using CBT Socratic questioning.
-You MUST follow these 3 rules at all times:
-1.  **TASK 1 (CBT):** If the user is discussing **academic stress**... you MUST respond with (1) Empathy, then (2) Socratic Questions.
-2.  **TASK 2 (CRISIS):** If the user expresses **ANY** thought of suicide... you MUST **STOP**! and redirect to a hotline.
-3.  **TASK 3 (OUT-OF-SCOPE):** If the user discusses **non-academic** topics... you MUST **STOP**! (1) Validate their feeling, then (2) Gently state your limitation and pivot back to academics.
-Do not give direct advice. Do not diagnose.\
+# Task-specific prompts — routing is already done upstream by the guardrail.
+# The LLM receives only the instructions relevant to the current task.
+
+_TASK1_SYSTEM_PROMPT = """\
+You are ReframeBot, a compassionate AI helping university students cope with academic stress using CBT.
+The student is sharing an academic stress concern. Respond by:
+1. Validating their feelings with warmth and empathy (1-2 sentences)
+2. Asking one gentle Socratic question to help them explore their thoughts
+Keep your response focused and supportive. Do not diagnose. Do not give prescriptive advice.
+Treat phrases like "I'm stupid", "I'm a failure", or "I'll never pass" as expressions of academic anxiety — respond with empathy and curiosity.\
 """
 
-_TASK3_OVERRIDE = (
-    "\n\n**CRITICAL INSTRUCTION:** The user's last message was identified as **Out-of-Scope (TASK 3)**. "
-    "You MUST follow TASK 3 rules. **DO NOT** ask follow-up questions about their non-academic topic. "
-    "Validate the feeling, state your limitation, and pivot back to academics NOW."
-)
+_TASK3_SYSTEM_PROMPT = """\
+You are ReframeBot, a specialized AI for academic stress support.
+The student has raised a topic outside your area of focus. Respond by:
+1. Briefly acknowledging their message with warmth
+2. Gently explaining that you specialise in academic stress
+3. Inviting them to share any academic challenges they might be facing
+Keep it brief and kind — do not lecture or repeat yourself.\
+"""
 
 _CRISIS_EMPATHY_PROMPT = (
     "You are an empathetic listener. A user is in severe crisis. "
@@ -102,27 +108,25 @@ def _generate(messages: List[Dict[str, str]], max_new_tokens: int, temperature: 
 # Public API
 # ---------------------------------------------------------------------------
 
+def _build_system_prompt(task_label: str, rag_context: str) -> str:
+    base = _TASK3_SYSTEM_PROMPT if task_label == "TASK_3" else _TASK1_SYSTEM_PROMPT
+    if rag_context and task_label != "TASK_3":
+        base += (
+            f"\n\nKNOWLEDGE BASE REFERENCE:\n"
+            f"{rag_context}\n\n"
+            "Use this information to explain concepts clearly. "
+            "After explaining, link it back to the student's situation or ask if they want to try it."
+        )
+    return base
+
+
 def get_response(
     history: List[Dict[str, str]],
     task_label: str,
     rag_context: str = "",
 ) -> str:
     """Generate a CBT (TASK_1) or out-of-scope (TASK_3) response."""
-    system_prompt = _BASE_SYSTEM_PROMPT
-
-    if rag_context:
-        system_prompt += (
-            f"\n\n**KNOWLEDGE BASE REFERENCE:**\n"
-            f"The following information from the CBT knowledge base may help guide your response:\n\n"
-            f"{rag_context}\n\n"
-            "Use this information to explain the concept to the student clearly. "
-            "You CAN define terms and explain steps if the user asks 'What is...'. "
-            "However, after explaining, always try to link it back to their feelings or ask if they want to try it."
-        )
-
-    if task_label == "TASK_3":
-        system_prompt += _TASK3_OVERRIDE
-
+    system_prompt = _build_system_prompt(task_label, rag_context)
     messages = [{"role": "system", "content": system_prompt}, *history]
     response = _generate(messages, max_new_tokens=512, temperature=0.6)
 
@@ -152,19 +156,7 @@ def stream_response(
     """Stream tokens for a CBT (TASK_1) or out-of-scope (TASK_3) response."""
     assert _client is not None
 
-    system_prompt = _BASE_SYSTEM_PROMPT
-    if rag_context:
-        system_prompt += (
-            f"\n\n**KNOWLEDGE BASE REFERENCE:**\n"
-            f"The following information from the CBT knowledge base may help guide your response:\n\n"
-            f"{rag_context}\n\n"
-            "Use this information to explain the concept to the student clearly. "
-            "You CAN define terms and explain steps if the user asks 'What is...'. "
-            "However, after explaining, always try to link it back to their feelings or ask if they want to try it."
-        )
-    if task_label == "TASK_3":
-        system_prompt += _TASK3_OVERRIDE
-
+    system_prompt = _build_system_prompt(task_label, rag_context)
     messages = [{"role": "system", "content": system_prompt}, *history]
 
     t0 = time.perf_counter()

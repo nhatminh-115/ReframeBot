@@ -47,9 +47,34 @@ SUMMARY_IMAGE: Path = _REPO_ROOT / "evaluation_summary.png"
 # Model loading
 # ---------------------------------------------------------------------------
 
+def _resolve_local_path(raw: str) -> str:
+    """Return an absolute path string that transformers can open without
+    mistaking it for a HuggingFace repo ID (which backslash paths trigger)."""
+    candidates: list[Path] = []
+    if raw:
+        candidates += [Path(raw), _REPO_ROOT / raw]
+    # Always fall back to the standard locations regardless of env var
+    candidates += [
+        _REPO_ROOT / "guardrail_model_retrained" / "best",
+        _REPO_ROOT / "guardrail_model" / "checkpoint-950",
+    ]
+    for c in candidates:
+        try:
+            if c.exists():
+                return str(c.resolve())
+        except OSError:
+            continue
+    raise FileNotFoundError(
+        f"Guardrail model not found (tried: {raw!r} and standard locations).\n"
+        "Set GUARDRAIL_PATH in .env to a forward-slash path relative to the repo root,\n"
+        "e.g.  GUARDRAIL_PATH=guardrail_model_retrained/best"
+    )
+
+
 def _load_guardrail(path: str):
     from transformers import pipeline
-    return pipeline("text-classification", model=path, tokenizer=path, device=-1)
+    resolved = _resolve_local_path(path)
+    return pipeline("text-classification", model=resolved, tokenizer=resolved, device=-1)
 
 
 def _load_llm(base: str, adapter: str):

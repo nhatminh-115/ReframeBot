@@ -33,6 +33,12 @@ SAMPLE_PROMPTS = [
     "I missed a deadline and now I don't know if I can pass the course.",
     "I feel stupid compared to my classmates. They all get it and I don't.",
     "I'm overwhelmed with 4 assignments due this week and I don't know where to start.",
+    # Longer inputs — stress-tests context window and latency at higher token counts
+    "I've been struggling with my thesis for months. My advisor keeps rejecting my drafts and I don't know what he wants. I've rewritten the introduction four times and each time he says it's not good enough. I'm starting to think I'm just not cut out for research.",
+    "I have a presentation tomorrow for my capstone project and I haven't slept properly in three days. I keep running through the slides in my head and noticing things I should have done differently. My group members did their parts but the integration feels weak and I'm the one presenting.",
+    # Shorter, ambiguous inputs — tests routing at minimal context
+    "I can't take this anymore.",
+    "I'm so done.",
 ]
 
 CHAT_HISTORY_TEMPLATE = [
@@ -131,11 +137,13 @@ async def post_chat_stream(client: httpx.AsyncClient, url: str, prompt: str) -> 
                 try:
                     payload = json.loads(data)
                     token = payload.get("token", "")
-                    if token:
-                        if first:
-                            ttft = time.perf_counter() - t0
-                            first = False
-                        token_count += len(token.split())
+                    # Count every SSE event as one token — vLLM streams one BPE
+                    # token per event. len(token.split()) would undercount because
+                    # whitespace-only tokens and subwords both count as 1 token.
+                    token_count += 1
+                    if first and token.strip():
+                        ttft = time.perf_counter() - t0
+                        first = False
                 except json.JSONDecodeError:
                     pass
         total = time.perf_counter() - t0
@@ -152,6 +160,15 @@ async def post_chat_stream(client: httpx.AsyncClient, url: str, prompt: str) -> 
 # ---------------------------------------------------------------------------
 # Benchmark runs
 # ---------------------------------------------------------------------------
+
+async def warmup(url: str, n: int = 3) -> None:
+    """Fire a few requests to populate KV cache and stabilise CUDA clocks."""
+    print(f"  Warming up ({n} requests, results discarded)...")
+    async with httpx.AsyncClient() as client:
+        for _ in range(n):
+            await post_chat(client, url, SAMPLE_PROMPTS[0])
+    print("  Warm-up done.\n")
+
 
 async def run_sequential(url: str, n: int) -> BenchmarkSummary:
     summary = BenchmarkSummary(label="sequential (chat)")
@@ -231,6 +248,8 @@ async def main(url: str, n: int, concurrency: int, skip_concurrent: bool) -> Non
             print(f"Health check FAILED — is the server running? ({exc})")
             return
 
+    await warmup(url)
+
     results = {}
 
     print("--- Sequential latency ---")
@@ -266,7 +285,7 @@ def _print_table(data: dict) -> None:
 def cli() -> None:
     parser = argparse.ArgumentParser(description="Benchmark ReframeBot API")
     parser.add_argument("--url", default="http://localhost:8000", help="API base URL")
-    parser.add_argument("--n", type=int, default=10, help="Number of requests (default: 10)")
+    parser.add_argument("--n", type=int, default=30, help="Number of requests (default: 30 — minimum for meaningful p95)")
     parser.add_argument(
         "--concurrency",
         type=int,

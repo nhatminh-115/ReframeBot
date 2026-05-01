@@ -93,7 +93,7 @@ _REAL_CRISIS_PATTERN_STRINGS: List[str] = [
     r"\b(overdose)\b",
     r"\b(i\s*(?:want|wanna)\s*to\s*die)\b",
     r"\b(i\s*(?:don\s*'?t|do not)\s*want\s*to\s*live)\b",
-    r"\b(no\s+reason\s+to\s+live)\b",
+    r"\b(no\s+reason\s+(?:to|in|for)\s+(?:liv(?:e|ing)|be(?:ing)?\s+(?:here|alive)))\b",
     r"\b(wish\s+i\s+(?:were|was)\s+dead)\b",
     r"\b(t\s*ô\s*i\s*(?:mu\s*ô\s*\s*n|muốn)\s*t\s*ự\s*t\s*ử)\b",
     r"\b(mu\s*ô\s*\s*n|muốn)\s*ch\s*ế\s*t\b",

@@ -1,4 +1,5 @@
-// API URL
+// API URL — relative paths, proxied by nginx to the api service
+// For local dev without Docker: run `python -m http.server` in web/ and keep api on :8000
 const API_URL = "http://localhost:8000/chat";
 const STREAM_URL = "http://localhost:8000/chat/stream";
 

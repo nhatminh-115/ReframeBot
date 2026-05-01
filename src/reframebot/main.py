@@ -150,7 +150,7 @@ def chat_endpoint(request: ChatRequest) -> ChatResponse:
     logger.info("Request: %s", history[-1]["content"][:100])
     effective_label, rag_context = _resolve(history)
 
-    if effective_label is None:
+    if effective_label is None or effective_label == "TASK_2":
         empathy = llm.get_crisis_empathy(history)
         return ChatResponse(response=f"{empathy}\n\n{VIETNAMESE_HOTLINES}")
 
@@ -171,7 +171,7 @@ def chat_stream_endpoint(request: ChatRequest) -> StreamingResponse:
     logger.info("Stream request: %s", history[-1]["content"][:100])
     effective_label, rag_context = _resolve(history)
 
-    if effective_label is None:
+    if effective_label is None or effective_label == "TASK_2":
         empathy = llm.get_crisis_empathy(history)
         full_response = f"{empathy}\n\n{VIETNAMESE_HOTLINES}"
         def _crisis() -> Iterator[str]:

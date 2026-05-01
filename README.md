@@ -68,11 +68,7 @@ snapshot_download('Nhatminh1234/ReframeBot-Guardrail-DistilBERT', local_dir='./g
 docker compose up
 ```
 
-4. Serve the web UI:
-```bash
-cd web && python -m http.server 8080
-```
-Open: http://localhost:8080/
+4. Open the UI at **http://localhost:3000** — served by the `web` nginx service included in the compose stack.
 
 ### Option B — In-process (no Docker)
 
@@ -133,6 +129,11 @@ ReframeBot/
 │   ├── evaluate_model.py       # Evaluation + metrics (--mode inprocess|vllm)
 │   ├── push_all_models.py      # Upload all models to HF Hub
 │   └── push_model_cards.py     # Sync model cards to HF Hub
+├── tests/
+│   └── unit/
+│       ├── test_constants.py   # Regex pattern tests (no ML deps)
+│       ├── test_guardrail.py   # build_guardrail_input + detect_crisis (mocked)
+│       └── test_router.py      # resolve_task logic (pure Python)
 ├── docs/
 │   └── SETUP.md
 └── Utils/                      # Background audio/image assets
@@ -146,9 +147,9 @@ ReframeBot/
 ## Configuration
 
 ### Change API URL
-Edit `web/script.js`:
-```javascript
-const API_URL = "http://your-domain.com/chat";
+The UI uses relative paths (`/chat`, `/chat/stream`) so it works out of the box via the nginx proxy. For a custom domain, update the nginx `proxy_pass` in `docker/nginx.conf`:
+```nginx
+proxy_pass http://your-api-host:8000/chat;
 ```
 
 ### All configuration via `.env`
@@ -203,38 +204,42 @@ Measured on NVIDIA RTX 5070 (8 GB VRAM):
 
 | Metric | AWQ 4-bit (vLLM) | Base + DPO (NF4, in-process) | Speedup |
 |---|---|---|---|
-| Latency p50 | 3.3s | 106.8s | **32x** |
-| Latency p95 | 5.9s | 124.1s | **21x** |
-| Time to First Token (TTFT) p50 | 1.09s | 12.3s | **11x** |
-| Tokens/sec | ~54 tok/s | ~2.1 tok/s | **26x** |
-| Throughput (4 concurrent) | 1.1 req/s | — | — |
+| Latency p50 | 2.6s | 106.8s | **41x** |
+| Latency p95 | 7.1s | 124.1s | **17x** |
+| Time to First Token (TTFT) p50 | 1.11s | 12.3s | **11x** |
+| Tokens/sec | ~39 tok/s | ~2.1 tok/s | **19x** |
+| Throughput (4 concurrent) | 1.0 req/s | — | — |
 | VRAM usage at runtime | ~5.4 GB dedicated | ~8 GB dedicated + ~7 GB shared (system RAM) | — |
 
 AWQ + vLLM (PagedAttention, continuous batching, Marlin kernel) delivers 26–32x faster inference vs in-process NF4 loading. The NF4 path spills into shared VRAM (system RAM) on Windows, has no kernel optimization or batching, and is suitable for evaluation and offline use only.
 
 Cold-start latency (~115s first request on vLLM) is due to CUDA kernel compilation; subsequent requests are warm.
 
+> **Methodology note:** Latency numbers include the full request path (guardrail → RAG → vLLM). Tokens/sec is measured by counting SSE events from the vLLM streaming endpoint (one event = one BPE token). The benchmark uses 8 fixed prompts rotated across N=30 sequential requests after a 3-request warm-up; p95 should be interpreted as directional, not production-grade, given the controlled prompt distribution.
+
 To reproduce:
 ```bash
-# AWQ via vLLM
+# AWQ via vLLM — 3-request warm-up runs automatically before measurement
 docker compose up -d vllm
-uv run python scripts/benchmark.py --n 20 --concurrency 4
+uv run python scripts/benchmark.py --n 30 --concurrency 4
 
-# Base+DPO NF4 in-process
-python scripts/benchmark_inprocess.py --n 10
+# Base+DPO NF4 in-process (baseline comparison)
+uv run python scripts/benchmark_inprocess.py --n 10
 ```
 
 ## Evaluation Results
-
-All metrics were measured on a held-out test set not seen during training.
 
 **Guardrail classifier** (same model regardless of LLM serving mode):
 
 | Metric | Score | Notes |
 |---|---|---|
-| Accuracy (held-out test set) | **93.3%** | Separate harder evaluation set |
-| Accuracy (validation split) | **99.0%** | 20% split, 335 samples |
-| F1 macro (validation split) | **0.99** | |
+| Accuracy (out-of-domain eval set) | **88.3%** | 60 samples: 45 standard + 15 hard edge cases |
+| Accuracy (in-domain validation split) | **99.0%** | 20% stratified split, 335 samples, same synthetic source as training |
+| F1 macro (in-domain validation split) | **0.99** | |
+
+Hard edge cases include: benign crisis metaphors ("dying of embarrassment"), passive suicidal ideation ("feeling like a burden to everyone"), ambiguous short inputs, Vietnamese text, and mixed academic+crisis signals. 4 of the 15 hard cases were misclassified, which is expected and informs where the model needs more training data.
+
+> **Interpretation:** The 99% figure comes from a validation split drawn from the same GPT-4 synthetic source as training — it measures fit, not generalization. The 88.3% on the out-of-domain set (including hard cases) is a more realistic signal. Rerun `scripts/evaluate_model.py` after any guardrail retrain to get updated numbers.
 
 **LLM quality** (varies by serving mode):
 
@@ -243,6 +248,7 @@ All metrics were measured on a held-out test set not seen during training.
 | BERTScore Relevance | **0.865** | 0.832 |
 | BERTScore Faithfulness | **0.858** | 0.849 |
 | Response Consistency | **0.775** | 0.732 |
+| Response Length Score | 0.625 | 0.599 |
 
 AWQ quantization does not degrade quality — all LLM metrics are equal to or better than the NF4 baseline. Faithfulness > Relevance in both modes suggests the model grounds well in retrieved CBT context when RAG is active.
 

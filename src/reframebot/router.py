@@ -2,16 +2,16 @@
 
 Maps a conversation turn to one of three effective task labels:
   TASK_1 — CBT / academic stress
-  TASK_2 — Crisis (handled upstream before this module is called)
+  TASK_2 — Crisis
   TASK_3 — Out-of-scope
 
 Priority chain (highest to lowest):
   0. Follow-up turn inside an academic context  → TASK_1
   1. Academic keyword present anywhere in recent context → TASK_1
-  2. Guardrail says TASK_2 with HIGH confidence but crisis detector is negative
-     (false alarm) → TASK_1
-  3. Guardrail says TASK_2 with LOW confidence (weak/ambiguous signal)
-     → TASK_1  [FIX: was incorrectly TASK_3]
+  2. Guardrail says TASK_2 with HIGH confidence → trust the guardrail → TASK_2
+     (detect_crisis may miss indirect/passive crisis language; guardrail captures it)
+  3. Guardrail says TASK_2 with LOW confidence (ambiguous signal) → TASK_1
+     (err on the side of empathy rather than escalating or dismissing)
   4. All other cases → keep guardrail label
 """
 from __future__ import annotations
@@ -61,21 +61,24 @@ def resolve_task(
         logger.debug("Route: academic keyword detected → TASK_1")
         return "TASK_1"
 
-    # --- Priority 2 & 3: Guardrail flagged TASK_2 but crisis detector said no ---
+    # --- Priority 2 & 3: Guardrail flagged TASK_2 ---
     if guardrail_label == "TASK_2":
         if guardrail_score >= crisis_confidence_threshold:
-            # High-confidence false alarm from guardrail
+            # High-confidence: trust the guardrail even if regex/semantic detector missed it.
+            # Passive/indirect crisis language ("no reason in living", "everyone better off
+            # without me") often evades pattern matching but the classifier catches it.
             logger.debug(
-                "Route: guardrail TASK_2 high-score (%.4f) but no crisis signal → TASK_1",
+                "Route: guardrail TASK_2 high-score (%.4f) → TASK_2",
                 guardrail_score,
             )
+            return "TASK_2"
         else:
-            # Low-confidence TASK_2 — still ambiguous, stay empathetic
+            # Low-confidence: ambiguous signal — respond with empathy but don't escalate.
             logger.debug(
-                "Route: guardrail TASK_2 low-score (%.4f) → TASK_1 (was TASK_3 before fix)",
+                "Route: guardrail TASK_2 low-score (%.4f) → TASK_1",
                 guardrail_score,
             )
-        return "TASK_1"
+            return "TASK_1"
 
     # --- Priority 4: Trust the guardrail ---
     logger.debug("Route: guardrail label %s (score %.4f)", guardrail_label, guardrail_score)
