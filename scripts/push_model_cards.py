@@ -266,7 +266,7 @@ Per-class results on the validation split (335 samples):
 | TASK_3 | 1.00 | 0.98 | 0.99 | 137 |
 | **macro avg** | **0.99** | **0.99** | **0.99** | **335** |
 
-Accuracy on a separate, harder held-out test set: **91.1%** (includes
+Accuracy on a separate, harder held-out test set: **88.3%** (includes
 boundary cases not present in the training distribution).
 
 ## Intended Use

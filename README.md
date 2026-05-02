@@ -2,8 +2,6 @@
 
 ReframeBot is a CBT-oriented chatbot for supporting university students with academic stress. It combines a fine-tuned Llama 3.1 model with a guardrail router (TASK_1/TASK_2/TASK_3) and optional RAG grounding from a CBT knowledge base.
 
-> For full training details, hyperparameters, and per-class metrics, see [MODEL_CARD.md](MODEL_CARD.md).
-
 ## Model Repositories
 
 | Model | Repository | Use |
@@ -26,6 +24,65 @@ The API container image is published on Docker Hub:
 - Guardrail routing with crisis detection and out-of-scope redirection
 - Optional RAG grounding over a CBT knowledge base
 - Dockerized stack (vLLM container + FastAPI container) and a lightweight static web UI
+
+## System Workflow
+
+```
+User message (browser)
+        |
+        v
+FastAPI  /chat  or  /chat/stream  (SSE)
+        |
+        |-- [1] CRISIS DETECTION  (guardrail.py)
+        |       Regex hard patterns  +  semantic cosine-sim
+        |       vs. crisis prototype sentences
+        |       Crisis detected? --> empathy reply + hotlines  (stop)
+        |
+        |-- [2] GUARDRAIL CLASSIFICATION  (guardrail.py)
+        |       Input : last N user turns
+        |       Model : DistilBERT fine-tuned (CPU, ~250 MB)
+        |       Output: TASK_1 / TASK_2 / TASK_3  +  confidence score
+        |
+        |-- [3] TASK ROUTING  (router.py)
+        |       Priority 0: follow-up inside an ongoing academic context
+        |       Priority 1: academic keyword match (regex)
+        |       Priority 2: TASK_2 at high confidence  --> hotlines  (stop)
+        |       Priority 3: TASK_2 at low confidence   --> hotlines  (stop)
+        |       Priority 4: trust guardrail label
+        |       Effective label: TASK_1 | TASK_2 | TASK_3
+        |
+        |-- [4] RAG RETRIEVAL  (rag.py)  -- TASK_1 only, optional
+        |       Query : latest user message
+        |       Store : ChromaDB  (CBT knowledge base)
+        |       Output: top-2 chunks, or ""  if DB unavailable
+        |
+        |-- [5] LLM GENERATION  (llm.py)
+                System prompt : task-specific  (TASK_1 / TASK_3)
+                Context       : RAG chunks injected into prompt
+                Backend       : HTTP --> vLLM container  (port 8001)
+                Safety filter : suppress accidental crisis output
+                Delivery      : SSE token stream  /  JSON response
+                        |
+                        v
+                Browser renders response
+```
+
+### Infrastructure
+
+```
+Browser  (port 3000, nginx)
+        |
+FastAPI container  (port 8000)
+  |- Guardrail classifier  (DistilBERT, CPU)
+  |- Crisis detector       (regex + SentenceTransformer, CPU)
+  |- RAG retrieval         (ChromaDB, disk)
+  |- Task router           (pure Python)
+        |  HTTP (OpenAI-compatible)
+        v
+vLLM container  (port 8001)
+  Llama 3.1 8B  AWQ 4-bit  --  5.4 GB VRAM
+  PagedAttention + continuous batching  --  ~39 tok/s
+```
 
 ## Quick Start
 
@@ -134,8 +191,6 @@ ReframeBot/
 │       ├── test_constants.py   # Regex pattern tests (no ML deps)
 │       ├── test_guardrail.py   # build_guardrail_input + detect_crisis (mocked)
 │       └── test_router.py      # resolve_task logic (pure Python)
-├── docs/
-│   └── SETUP.md
 └── Utils/                      # Background audio/image assets
 ```
 
