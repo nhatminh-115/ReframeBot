@@ -2,6 +2,12 @@
 
 ReframeBot is a CBT-oriented chatbot for supporting university students with academic stress. It combines a fine-tuned Llama 3.1 model with a guardrail router (TASK_1/TASK_2/TASK_3) and optional RAG grounding from a CBT knowledge base.
 
+
+
+Uploading Video Project 4.mp4…
+
+
+
 ## Model Repositories
 
 | Model | Repository | Use |
