@@ -2,6 +2,10 @@
 
 ReframeBot is a CBT-oriented chatbot for supporting university students with academic stress. It combines a fine-tuned Llama 3.1 model with a guardrail router (TASK_1/TASK_2/TASK_3) and optional RAG grounding from a CBT knowledge base.
 
+
+https://github.com/user-attachments/assets/fc269f59-4975-476e-b941-2491cb7e35e8
+
+
 ## Model Repositories
 
 | Model | Repository | Use |
@@ -224,24 +228,6 @@ Copy `.env.example` to `.env`. Key variables:
 
 ### Customize Colors
 Edit `web/style.css` to change color scheme, glass effects, and more.
-
-## Serving Architecture
-
-```
-User request
-     ↓
-FastAPI container  (port 8000)
-  ├─ Guardrail classifier (DistilBERT, CPU)
-  ├─ Crisis detector (regex + semantic similarity)
-  ├─ RAG retrieval (ChromaDB)
-  └─ HTTP → vLLM container (OpenAI-compatible API)
-               ↓
-         vLLM container  (port 8001)
-           AWQ-Marlin 4-bit Llama 3.1 8B
-           PagedAttention + continuous batching
-```
-
-The LLM is served as a separate vLLM process — the FastAPI app calls it like an external service via the OpenAI client. This separates inference infrastructure from application logic and enables concurrent request batching.
 
 ## Model Sizes
 
